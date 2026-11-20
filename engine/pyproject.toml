@@ -1,0 +1,19 @@
+[project]
+name = "taxengine"
+version = "0.1.0"
+description = "Israeli tax calculation engine (individuals, companies, s.62A, s.81A-81F)"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.6", "pyyaml>=6"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["taxengine*"]
+
+[tool.setuptools.package-data]
+taxengine = ["params/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

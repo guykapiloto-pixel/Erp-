@@ -1,0 +1,73 @@
+# Tax parameters for tax year 2025.
+# Every leaf: {value, source, status}. status: verified | secondary | unverified
+# Amounts in ILS, rates in percent.
+year: 2025
+
+income_tax:
+  brackets:   # annual upper bounds; last bracket open-ended (upper: null)
+    status: secondary
+    source: "https://www.gov.il/he/departments/news/tax-brackets (to verify); frozen 2025-2027 per Arrangements Law"
+    value:
+      - {upper: 84120, rate: 10}
+      - {upper: 120720, rate: 14}
+      - {upper: 193800, rate: 20}
+      - {upper: 269280, rate: 31}
+      - {upper: 560280, rate: 35}
+      - {upper: null, rate: 47}
+  passive_min_rate:      {value: 31, status: secondary, source: "Ordinance s.121(a)(1) - non personal-exertion income taxed from 31%"}
+  credit_point_annual:   {value: 2904, status: secondary, source: "242 ILS/month x 12"}
+  base_credit_points_resident: {value: 2.25, status: secondary, source: "Ordinance s.34, s.36"}
+  extra_credit_points_female:  {value: 0.5,  status: secondary, source: "Ordinance s.36A"}
+  surtax_threshold:      {value: 721560, status: secondary, source: "Ordinance s.121B; frozen 2025-2027 (capitax 25022025)"}
+  surtax_rate:           {value: 3, status: verified, source: "Ordinance s.121B(a)"}
+  surtax_capital_extra_rate: {value: 2, status: secondary, source: "Ordinance s.121B(a1), from 1.1.2025"}
+  dividend_rate:          {value: 25, status: verified, source: "Ordinance s.125B(1)"}
+  dividend_rate_material: {value: 30, status: verified, source: "Ordinance s.125B(2)"}
+  capital_gain_rate:          {value: 25, status: verified, source: "Ordinance s.91(a)"}
+  capital_gain_rate_material: {value: 30, status: verified, source: "Ordinance s.91(b)"}
+  interest_rate_unlinked: {value: 15, status: verified, source: "Ordinance s.125C"}
+  interest_rate_linked:   {value: 25, status: verified, source: "Ordinance s.125C"}
+  donation_credit_rate:   {value: 35, status: secondary, source: "Ordinance s.46"}
+
+corporate:
+  corporate_tax_rate: {value: 23, status: verified, source: "Ordinance s.126(a)"}
+
+s62a:
+  revenue_cap_per_controller: {value: 30000000, status: verified, source: "s.62A(a1)(1); Directive 9/2026 fn.1"}
+  profitability_threshold:    {value: 25, status: verified, source: "s.62A(a1); Directive 9/2026 s.3"}
+  retained_profits_threshold: {value: 750000, status: verified, source: "s.62A(a1); Directive 9/2026 fn.1"}
+  active_shareholder_control: {value: 30, status: verified, source: "s.62A(d) 'active shareholder'; draft circular 3.5.2.1"}
+  controller_min_holding:     {value: 10, status: secondary, source: "s.62A(d) 'controlling shareholder' (10% of any means of control)"}
+  partnership_min_share:      {value: 10, status: verified, source: "s.62A(a1)(2)(b), s.62A(a2)"}
+  a2_attribution_rate:        {value: 55, status: verified, source: "s.62A(a2); Directive 9/2026 s.3"}
+  a3_attribution_rate:        {value: 55, status: verified, source: "s.62A(a3); Directive 9/2026 s.3"}
+  a3_dividend_rate:           {value: 25, status: verified, source: "s.62A(a3) - taxed as non-material shareholder"}
+  allow_2023_2025_average:    {value: true, status: verified, source: "Transitional s.5(e) of the 2024 law - tax year 2025 only"}
+
+s81:
+  extra_tax_rate:            {value: 2, status: verified, source: "s.81B(a); Directive 9/2026 s.4"}
+  min_distribution_of_accumulated: {value: 5, status: verified, source: "s.81B(b) transitional - 5% in 2025; Directive 9/2026 s.4"}
+  min_distribution_of_excess:      {value: 50, status: verified, source: "s.81B(b); Directive 9/2026 s.4"}
+  cash_shield:               {value: 750000, status: verified, source: "s.81C; Directive 9/2026 s.4.1 part C"}
+  applicability_threshold:   {value: 750000, status: verified, source: "Directive 9/2026 s.4.1 - no appendix 1281 below 750K"}
+  loss_exemption_ratio:      {value: 10, status: verified, source: "s.81B(b); Directive 9/2026 s.4 - loss > 10% of accumulated profits"}
+  transitional_2025_distribution: {value: 20, status: secondary, source: "s.5 of the 2024 law - distribute >=20% of 31.12.2024 trapped profits in 2025"}
+  report_deadline: {value: "04-30", status: secondary, source: "Circular 7/2025 s.5.4 (per Grant Thornton summary)"}
+  notional_dividend_withholding: {value: 35, status: verified, source: "Regulations under s.81B(b)(3)(c); Directive 9/2026 s.5.1"}
+  notional_dividend_undistributed_share: {value: 65, status: verified, source: "Regulation 3(e); Directive 9/2026 s.5.4 field 083"}
+
+nii:   # Bituach Leumi + health tax
+  reduced_threshold_monthly: {value: 7522, status: unverified, source: "60% of average wage 2025 - to verify (btl.gov.il)"}
+  max_insurable_monthly:     {value: 50695, status: unverified, source: "to verify (btl.gov.il)"}
+  employee:
+    status: unverified
+    source: "btl.gov.il rates for employees 2025 - to verify"
+    value: {ni_reduced: 1.04, ni_full: 7.0, health_reduced: 3.23, health_full: 5.17}
+  employer:
+    status: unverified
+    source: "btl.gov.il employer rates 2025 - to verify"
+    value: {ni_reduced: 4.51, ni_full: 7.6}
+  self_employed:
+    status: unverified
+    source: "btl.gov.il self-employed rates 2025 - to verify"
+    value: {ni_reduced: 4.47, ni_full: 12.83, health_reduced: 3.23, health_full: 5.17}

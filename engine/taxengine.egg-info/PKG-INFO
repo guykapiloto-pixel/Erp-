@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: taxengine
+Version: 0.1.0
+Summary: Israeli tax calculation engine (individuals, companies, s.62A, s.81A-81F)
+Requires-Python: >=3.11
+Requires-Dist: pydantic>=2.6
+Requires-Dist: pyyaml>=6
