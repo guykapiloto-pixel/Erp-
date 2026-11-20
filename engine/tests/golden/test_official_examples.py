@@ -97,8 +97,8 @@ def test_g6_profitability_with_related_payments():
     c = comp(r, "C")
     assert c.profitability_rate == Dm("48.00")
     assert c.s62a1_applies
-    # related payments affect only the test, not the attributed amount: 90 - 25% x 250 = 27.5
-    assert c.attributed_by_section["a1"] == Dm("27.50")
+    # statute s.62A(a1)(1): 90 − 25% × (250 − 30) = 35
+    assert c.attributed_by_section["a1"] == Dm("35.00")
     assert any(a.code == "RELATED_PAYMENTS" for a in r.alerts)
 
 

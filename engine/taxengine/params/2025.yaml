@@ -5,8 +5,8 @@ year: 2025
 
 income_tax:
   brackets:   # annual upper bounds; last bracket open-ended (upper: null)
-    status: secondary
-    source: "https://www.gov.il/he/departments/news/tax-brackets (to verify); frozen 2025-2027 per Arrangements Law"
+    status: verified
+    source: "BKL-2025 p.10 (Tax Authority payroll booklet); s.120B(e) freeze 2025-2027 (LAW-3342)"
     value:
       - {upper: 84120, rate: 10}
       - {upper: 120720, rate: 14}
@@ -14,20 +14,20 @@ income_tax:
       - {upper: 269280, rate: 31}
       - {upper: 560280, rate: 35}
       - {upper: null, rate: 47}
-  passive_min_rate:      {value: 31, status: secondary, source: "Ordinance s.121(a)(1) - non personal-exertion income taxed from 31%"}
-  credit_point_annual:   {value: 2904, status: secondary, source: "242 ILS/month x 12"}
-  base_credit_points_resident: {value: 2.25, status: secondary, source: "Ordinance s.34, s.36"}
+  passive_min_rate:      {value: 31, status: verified, source: "Ordinance s.121(a)(1) - non personal-exertion income taxed from 31%"}
+  credit_point_annual:   {value: 2904, status: verified, source: "242 ILS/month x 12"}
+  base_credit_points_resident: {value: 2.25, status: verified, source: "Ordinance s.34, s.36"}
   extra_credit_points_female:  {value: 0.5,  status: secondary, source: "Ordinance s.36A"}
-  surtax_threshold:      {value: 721560, status: secondary, source: "Ordinance s.121B; frozen 2025-2027 (capitax 25022025)"}
+  surtax_threshold:      {value: 721560, status: verified, source: "Ordinance s.121B; frozen 2025-2027 (capitax 25022025)"}
   surtax_rate:           {value: 3, status: verified, source: "Ordinance s.121B(a)"}
-  surtax_capital_extra_rate: {value: 2, status: secondary, source: "Ordinance s.121B(a1), from 1.1.2025"}
+  surtax_capital_extra_rate: {value: 2, status: verified, source: "Ordinance s.121B(a1), from 1.1.2025"}
   dividend_rate:          {value: 25, status: verified, source: "Ordinance s.125B(1)"}
   dividend_rate_material: {value: 30, status: verified, source: "Ordinance s.125B(2)"}
   capital_gain_rate:          {value: 25, status: verified, source: "Ordinance s.91(a)"}
   capital_gain_rate_material: {value: 30, status: verified, source: "Ordinance s.91(b)"}
   interest_rate_unlinked: {value: 15, status: verified, source: "Ordinance s.125C"}
   interest_rate_linked:   {value: 25, status: verified, source: "Ordinance s.125C"}
-  donation_credit_rate:   {value: 35, status: secondary, source: "Ordinance s.46"}
+  donation_credit_rate:   {value: 35, status: verified, source: "Ordinance s.46"}
 
 corporate:
   corporate_tax_rate: {value: 23, status: verified, source: "Ordinance s.126(a)"}
@@ -37,7 +37,7 @@ s62a:
   profitability_threshold:    {value: 25, status: verified, source: "s.62A(a1); Directive 9/2026 s.3"}
   retained_profits_threshold: {value: 750000, status: verified, source: "s.62A(a1); Directive 9/2026 fn.1"}
   active_shareholder_control: {value: 30, status: verified, source: "s.62A(d) 'active shareholder'; draft circular 3.5.2.1"}
-  controller_min_holding:     {value: 10, status: secondary, source: "s.62A(d) 'controlling shareholder' (10% of any means of control)"}
+  controller_min_holding:     {value: 10, status: verified, source: "s.62A(d) 'controlling shareholder' (10% of any means of control)"}
   partnership_min_share:      {value: 10, status: verified, source: "s.62A(a1)(2)(b), s.62A(a2)"}
   a2_attribution_rate:        {value: 55, status: verified, source: "s.62A(a2); Directive 9/2026 s.3"}
   a3_attribution_rate:        {value: 55, status: verified, source: "s.62A(a3); Directive 9/2026 s.3"}
@@ -51,23 +51,35 @@ s81:
   cash_shield:               {value: 750000, status: verified, source: "s.81C; Directive 9/2026 s.4.1 part C"}
   applicability_threshold:   {value: 750000, status: verified, source: "Directive 9/2026 s.4.1 - no appendix 1281 below 750K"}
   loss_exemption_ratio:      {value: 10, status: verified, source: "s.81B(b); Directive 9/2026 s.4 - loss > 10% of accumulated profits"}
-  transitional_2025_distribution: {value: 20, status: secondary, source: "s.5 of the 2024 law - distribute >=20% of 31.12.2024 trapped profits in 2025"}
-  report_deadline: {value: "04-30", status: secondary, source: "Circular 7/2025 s.5.4 (per Grant Thornton summary)"}
+  transitional_20pct_track: {value: 20, status: verified, source: "LAW-3343 s.5 - years 2025-2030; excess reduced by remaining start-date profits"}
+  payment_due: {value: "05-31", status: verified, source: "s.81F(c): earlier of s.132 return date (31 May or extension) or end of following year; linkage+interest after"}
   notional_dividend_withholding: {value: 35, status: verified, source: "Regulations under s.81B(b)(3)(c); Directive 9/2026 s.5.1"}
   notional_dividend_undistributed_share: {value: 65, status: verified, source: "Regulation 3(e); Directive 9/2026 s.5.4 field 083"}
 
-nii:   # Bituach Leumi + health tax
-  reduced_threshold_monthly: {value: 7522, status: unverified, source: "60% of average wage 2025 - to verify (btl.gov.il)"}
-  max_insurable_monthly:     {value: 50695, status: unverified, source: "to verify (btl.gov.il)"}
+nii:   # Bituach Leumi + health tax (rates identical 2025 from Feb, and 2026; Jan 2025 full health 5.16% ignored)
+  reduced_threshold_monthly: {value: 7522, status: verified, source: "btl.gov.il employer circular 1515 (2025)"}
+  max_insurable_monthly:     {value: 50695, status: verified, source: "btl.gov.il employer circular 1515 (2025)"}
   employee:
-    status: unverified
-    source: "btl.gov.il rates for employees 2025 - to verify"
+    status: verified
+    source: "btl.gov.il employer circular - employee share"
     value: {ni_reduced: 1.04, ni_full: 7.0, health_reduced: 3.23, health_full: 5.17}
   employer:
-    status: unverified
-    source: "btl.gov.il employer rates 2025 - to verify"
+    status: verified
+    source: "btl.gov.il employer circular - employer share"
     value: {ni_reduced: 4.51, ni_full: 7.6}
+  controlling_employee:
+    status: verified
+    source: "btl.gov.il employer circular - controlling shareholder in few-company, employee share"
+    value: {ni_reduced: 1.02, ni_full: 6.79, health_reduced: 3.23, health_full: 5.17}
+  controlling_employer:
+    status: verified
+    source: "btl.gov.il employer circular - controlling shareholder, employer share"
+    value: {ni_reduced: 4.46, ni_full: 7.38}
   self_employed:
-    status: unverified
-    source: "btl.gov.il self-employed rates 2025 - to verify"
+    status: verified
+    source: "btl.gov.il self-employed circular 2025"
     value: {ni_reduced: 4.47, ni_full: 12.83, health_reduced: 3.23, health_full: 5.17}
+  passive:
+    status: verified
+    source: "btl.gov.il - income not from work"
+    value: {ni_reduced: 6.92, ni_full: 7.0, health_reduced: 3.23, health_full: 5.17}

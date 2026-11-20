@@ -75,8 +75,20 @@ def compute_individual(ind: IndividualInput, b: IncomeBuckets, ctx: Ctx) -> Indi
 
     special: dict[str, tuple[Decimal, Decimal]] = {}
     r_div, r_div_m = p.rate("income_tax.dividend_rate"), p.rate("income_tax.dividend_rate_material")
-    div_reg = b.dividends_regular + b.notional_dividends_regular + (ZERO if ind.dividends_external_material else ind.dividends_external)
-    div_mat = b.dividends_material + b.notional_dividends_material + (ind.dividends_external if ind.dividends_external_material else ZERO)
+    act_reg = b.dividends_regular + (ZERO if ind.dividends_external_material else ind.dividends_external)
+    act_mat = b.dividends_material + (ind.dividends_external if ind.dividends_external_material else ZERO)
+    if ind.notional_65_balance > 0 and act_reg + act_mat > 0:
+        # reg. 3(e): an actual dividend is treated as undistributed up to 65% of the notional dividend already taxed
+        use_m = min(ind.notional_65_balance, act_mat)
+        use_r = min(ind.notional_65_balance - use_m, act_reg)
+        act_mat -= use_m
+        act_reg -= use_r
+        b.notional_65_used = use_m + use_r
+        ctx.trace.add(ent, STAGE, "notional_65", "דיבידנד בפועל שנחשב כלא חולק (65% מדיבידנד רעיוני)", b.notional_65_used,
+                      f"min(יתרת מחסנית {fmt(ind.notional_65_balance)}; דיבידנד בפועל {fmt(use_m + use_r + act_reg + act_mat)})",
+                      "תקנה 3(ה) לתקנות דיבידנדים ששולם מס בשל חלוקתם; טופס 1301 שדה 083")
+    div_reg = act_reg + b.notional_dividends_regular
+    div_mat = act_mat + b.notional_dividends_material
     if div_reg: special["dividend_25"] = (div_reg, r_div)
     if div_mat: special["dividend_30"] = (div_mat, r_div_m)
     if b.dividends_62a3: special["dividend_62a3"] = (b.dividends_62a3, p.rate("s62a.a3_dividend_rate"))

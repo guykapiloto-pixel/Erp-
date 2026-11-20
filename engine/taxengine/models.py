@@ -51,6 +51,8 @@ class IndividualInput(_Base):
     tax_credits: Money = Field(default=Decimal(0), description="Direct tax credits in ILS (pension s.45A, etc.)")
     donations: Money = Field(default=Decimal(0), description="Donations eligible under s.46 (35% credit)")
 
+    notional_65_balance: Money = Field(default=Decimal(0),
+        description="'Stack' balance: 65% of notional dividends already taxed and not yet used (reg. 3(e)); actual dividends up to it are exempt")
     tax_withheld: Money = Field(default=Decimal(0), description="Income tax withheld at source (salary, interest, etc.)")
     advances_paid: Money = Field(default=Decimal(0))
     nii_paid: Money = Field(default=Decimal(0), description="NII + health already paid/withheld")
@@ -110,7 +112,12 @@ class S81Input(_Base):
     exempt_accumulated_profits: Money = Decimal(0)
     deductible_expenses: Money = Field(default=Decimal(0), description="Expense shield (allowed deductible expenses)")
     depreciated_assets_cost: Money = Field(default=Decimal(0), description="Asset shield (depreciated cost at year end)")
-    trapped_profits_31_12_2024: Money | None = Field(default=None, description="For 2025 20% transitional exemption")
+    start_date_profits_remaining: Money | None = Field(default=None,
+        description="Remaining accumulated profits as of 31.12.2024 (LAW-3343 s.5 20% track, years 2025-2030)")
+    exempt_profits_option: int = Field(default=2, ge=1, le=2,
+        description="s.81A exempt accumulated profits: 1 = since incorporation less special assets (forfeits asset shield); 2 = last 7 years")
+    cash_shield_share_pct: Percent = Field(default=Decimal(100),
+        description="Share of the 750K cash shield (split among few-companies controlled >=50% by the same individual)")
     dividends_qualifying: Money | None = Field(default=None,
         description="Dividends counted for s.81B(b); default = regular dividends declared (excl. 62A dividend alternative)")
 

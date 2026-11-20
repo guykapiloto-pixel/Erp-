@@ -15,6 +15,8 @@ from .trace import Trace
 class IncomeBuckets:
     """Income flowing to an individual from modelled companies (added to their own inputs)."""
     salary_from_companies: Decimal = ZERO
+    salary_controlling: Decimal = ZERO     # part paid to a controlling shareholder of a few-company (BL rates differ)
+    notional_65_used: Decimal = ZERO
     attributed: dict[str, Decimal] = field(default_factory=lambda: defaultdict(lambda: ZERO))  # section -> amount
     dividends_regular: Decimal = ZERO      # 25%
     dividends_material: Decimal = ZERO     # 30%

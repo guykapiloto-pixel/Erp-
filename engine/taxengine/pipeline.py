@@ -10,7 +10,7 @@ from .params import load_params
 from .rules.corporate import corporate_tax
 from .rules.individual import compute_individual
 from .rules.nii import compute_nii
-from .rules.s62a import apply_62a
+from .rules.s62a import _group_control, _holders, apply_62a
 from .rules.s81 import apply_81b
 
 
@@ -75,9 +75,13 @@ def calculate(req: CalcRequest) -> CalcResult:
 
     for c in _order(req):
         ent = f"company:{c.id}"
-        for sh in c.shareholders:
+        gc = _group_control(_holders(c))
+        for h in _holders(c):
+            sh = h.sh
             if sh.individual_id and sh.salary_from_company:
                 ctx.buckets[sh.individual_id].salary_from_companies += sh.salary_from_company
+                if c.is_few_company and gc[h.group] >= Decimal("0.10"):
+                    ctx.buckets[sh.individual_id].salary_controlling += sh.salary_from_company
         st = apply_62a(c, ctx)
         cs = corporate_tax(c, ctx, st)
         loss_in_year = pos(-cs.taxable)

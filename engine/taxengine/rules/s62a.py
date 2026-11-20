@@ -60,6 +60,43 @@ def _holders(c: CompanyInput) -> list[Holder]:
     return out
 
 
+def _holders_lt(c: CompanyInput, ctx: Ctx) -> list[Holder]:
+    """Shareholders with look-through of holding companies to the individuals behind them.
+    s.62A(d): an active / material holder holds 'directly or indirectly'. Effective rights = product along the
+    chain; the indirect holder inherits the personal-effort / residency flags of their row in the parent."""
+    merged: dict[str, Holder] = {}
+    others: list[Holder] = []
+
+    def add(sh: Shareholder, rights: Decimal, control: Decimal, effort: bool, seen: frozenset) -> None:
+        if sh.individual_id:
+            prev = merged.get(sh.individual_id)
+            syn = sh.model_copy(update={"profit_rights_pct": rights * 100, "control_pct": control * 100,
+                                        "personal_effort": sh.personal_effort or effort})
+            if prev:
+                syn = syn.model_copy(update={
+                    "profit_rights_pct": prev.sh.profit_rights_pct + rights * 100,
+                    "control_pct": (prev.sh.control_pct or 0) + control * 100,
+                    "personal_effort": prev.sh.personal_effort or syn.personal_effort,
+                    "salary_from_company": prev.sh.salary_from_company if prev.sh is not sh else sh.salary_from_company})
+            merged[sh.individual_id] = Holder(sh=syn, key=sh.individual_id, group=syn.relatives_group or sh.individual_id,
+                                              rights=syn.profit_rights_pct / 100, control=syn.control_pct / 100)
+        elif sh.company_id and sh.company_id not in seen and ctx.company(sh.company_id):
+            parent = ctx.company(sh.company_id)
+            for psh in parent.shareholders:
+                pr = psh.profit_rights_pct / 100
+                pc = (psh.control_pct if psh.control_pct is not None else psh.profit_rights_pct) / 100
+                add(psh, rights * pr, control * pc, effort or sh.personal_effort, seen | {sh.company_id})
+        else:
+            key = f"external:{sh.external_name or sh.company_id or '?'}"
+            others.append(Holder(sh=sh, key=key, group=sh.relatives_group or key, rights=rights, control=control))
+
+    for sh in c.shareholders:
+        r = sh.profit_rights_pct / 100
+        k = (sh.control_pct if sh.control_pct is not None else sh.profit_rights_pct) / 100
+        add(sh, r, k, False, frozenset({c.id}))
+    return list(merged.values()) + others
+
+
 def _group_control(holders: list[Holder]) -> dict[str, Decimal]:
     g: dict[str, Decimal] = defaultdict(lambda: ZERO)
     for h in holders:
@@ -72,7 +109,7 @@ def active_shareholders(c: CompanyInput, ctx: Ctx) -> list[Holder]:
     (a) holds >=30% of any means of control, alone or together with relatives (conclusive presumption), or
     (b) whose personal effort generates the company's income (works, manages, signs) - regardless of holding."""
     thr = ctx.p.rate("s62a.active_shareholder_control")
-    holders = _holders(c)
+    holders = _holders_lt(c, ctx)
     gc = _group_control(holders)
     return [h for h in holders
             if h.sh.individual_id and h.sh.resident and (gc[h.group] >= thr or h.sh.personal_effort)]
@@ -144,7 +181,7 @@ def _old_62a(c: CompanyInput, ctx: Ctx, st: S62AState, rev: Decimal, tax: Decima
                   f"ס' 62א(א) חושב לפי מדיניות 'עודף מעל 25%'. לפי לשון החוק הייחוס מלא ({fmt(full)} ₪); "
                   f"הפרש הכנסה שלא יוחסה: {fmt(full - excess)} ₪.", "ס' 62א(א)")
     if o.controller_id:
-        h = next((h for h in _holders(c) if h.sh.individual_id == o.controller_id), None)
+        h = next((h for h in _holders_lt(c, ctx) if h.sh.individual_id == o.controller_id), None)
         recipients = [Holder(sh=h.sh, key=h.key, group=h.group, rights=Decimal(1), control=h.control)] if h else []
     else:
         recipients = active_shareholders(c, ctx)
@@ -204,7 +241,7 @@ def _excluded(c: CompanyInput, ctx: Ctx) -> tuple[bool, str]:
     """Exclusions of s.62A(a1)(2)(c) (draft circular s.3.4)."""
     thr_hold = ctx.p.rate("s62a.active_shareholder_control")          # 'material holder' = 30%
     thr_profit = ctx.p.num("s62a.retained_profits_threshold")
-    holders = _holders(c)
+    holders = _holders_lt(c, ctx)
     gc = _group_control(holders)
     material = [h for h in holders if gc[h.group] >= thr_hold]
     own = c.accumulated_profits_prev if c.accumulated_profits_prev > 0 else ZERO
@@ -227,7 +264,7 @@ def _excluded(c: CompanyInput, ctx: Ctx) -> tuple[bool, str]:
 
 def _controllers_count(c: CompanyInput, ctx: Ctx) -> int:
     thr = ctx.p.rate("s62a.controller_min_holding")
-    gc = _group_control(_holders(c))
+    gc = _group_control(_holders_lt(c, ctx))
     return max(1, sum(1 for v in gc.values() if v >= thr))
 
 
@@ -268,16 +305,18 @@ def apply_62a(c: CompanyInput, ctx: Ctx) -> S62AState:
 
     remaining = tax
     if applies:
-        attr_total = pos(tax - thr_pr * rev)
+        # statute (Amendment 277, s.62A(a1)(1)): T − 25% × (R − payments to a related company)
+        rp = st.rp_added
+        attr_total = pos(tax - thr_pr * (rev - rp))
         ctx.trace.add(ent, STAGE, "a1_attributable", "ס' 62א(א1) – הכנסה חייבת לייחוס", attr_total,
-                      f"max(0, {fmt(tax)} − {fmt_rate(thr_pr)} × {fmt(rev)})",
-                      "ס' 62א(א1)(1); טיוטת חוזר נספח ה'; הוראת ביצוע 9/2026 ס' 3.3.1")
+                      f"max(0, {fmt(tax)} − {fmt_rate(thr_pr)} × ({fmt(rev)} − {fmt(rp)} תשלומים לחברה קשורה))",
+                      "ס' 62א(א1)(1) (ס\"ח 3343); טיוטת חוזר נספח ה'; הוראת ביצוע 9/2026 ס' 3.3.1")
         actives = active_shareholders(c, ctx)
         if not actives:
             ctx.alert("S62A1_NO_ACTIVE", "warning", ent, "הסעיף חל אך לא זוהה בעל מניות פעיל – לא בוצע ייחוס.")
         got = _distribute(ctx, st, c, "a1", attr_total, actives, "ייחוס לפי 62א(א1)", "ס' 62א(א1)(1)")
         remaining = tax - got
-        st.reason_a1 = "חל"
+        st.reason_a1 = f"כל התנאים מתקיימים; ייחוס {fmt(got)} ₪ לפי T − 25% × (R − RP)"
         ctx.alert("S62A1_APPLIES", "critical", ent,
                   f"ס' 62א(א1) חל: {fmt(got)} ₪ מיוחסים לבעלי המניות הפעילים וממוסים במס שולי; "
                   f"{fmt(remaining)} ₪ נותרים בחברה.", "ס' 62א(א1)")
@@ -338,7 +377,7 @@ def _apply_a3(c: CompanyInput, ctx: Ctx, st: S62AState) -> None:
             continue
         part = rate * d.amount
         if d.controller_id:
-            h = next((h for h in _holders(c) if h.sh.individual_id == d.controller_id), None)
+            h = next((h for h in _holders_lt(c, ctx) if h.sh.individual_id == d.controller_id), None)
             recipients = [Holder(sh=h.sh, key=h.key, group=h.group, rights=Decimal(1), control=h.control)] if h else []
         else:
             recipients = active_shareholders(c, ctx)

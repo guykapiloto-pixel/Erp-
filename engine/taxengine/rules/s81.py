@@ -50,60 +50,69 @@ def apply_81b(c: CompanyInput, ctx: Ctx, cs: CorpState, loss_in_year: Decimal) -
         return s
 
     s.applies = True
-    shield_cash = ctx.p.num("s81.cash_shield")
-    shield = max(shield_cash, i.deductible_expenses, i.depreciated_assets_cost)
-    which = {shield_cash: "מגן כספי", i.deductible_expenses: "מגן הוצאות", i.depreciated_assets_cost: "מגן נכסים"}[shield]
+    # ── shields (s.81C), measured at the end of the tested year ──
+    shield_cash = ctx.p.num("s81.cash_shield") * i.cash_shield_share_pct / 100
+    shield_assets = i.depreciated_assets_cost if i.exempt_profits_option == 2 else ZERO
+    shields = {"מגן כספי": shield_cash, "מגן הוצאות": i.deductible_expenses, "מגן נכסים": shield_assets}
+    which, shield = max(shields.items(), key=lambda kv: kv[1])
     s.excess = pos(s.accumulated - i.exempt_accumulated_profits - shield)
     ctx.trace.add(ent, STAGE, "excess", "רווחים עודפים", s.excess,
-                  f"max(0, {fmt(s.accumulated)} − {fmt(i.exempt_accumulated_profits)} (פטורים) − {fmt(shield)} ({which}: "
-                  f"max(750,000; הוצאות {fmt(i.deductible_expenses)}; נכסים {fmt(i.depreciated_assets_cost)})))",
-                  "ס' 81א, 81ג; נספח 1281 חלק ג")
+                  f"max(0, {fmt(s.accumulated)} − {fmt(i.exempt_accumulated_profits)} (פטורים, חלופה {i.exempt_profits_option}) − "
+                  f"{fmt(shield)} ({which}: max(כספי {fmt(shield_cash)}; הוצאות {fmt(i.deductible_expenses)}; נכסים {fmt(shield_assets)})))",
+                  "ס' 81א, 81ג; חוזר 7/2025; נספח 1281 חלק ג",
+                  "חלופה 1 לרווחים פטורים מוותרת על מגן הנכסים (ס' 81ג(ג))" if i.exempt_profits_option == 1 else "")
 
     div = i.dividends_qualifying if i.dividends_qualifying is not None else cs.qualifying_dividend_81b
-    ctx.trace.add(ent, STAGE, "qualifying_dividend", "דיבידנד שחולק בשנת המס (לעניין 81ב)", div,
-                  "דיבידנדים רגילים + דיבידנד לחברה בשרשור ששולם בגינו מס; ללא 'חלופת הדיבידנד' של 62א",
-                  "ס' 81ב(ב); הוראת ביצוע 9/2026 ס' 3.3.2")
+    ctx.trace.add(ent, STAGE, "qualifying_dividend", "דיבידנד ששולם בגינו מס בשנת המס (לעניין 81ב)", div,
+                  "דיבידנדים ליחידים + דיבידנד בשרשור במסלול ראשי/חלופי; ללא 'חלופת הדיבידנד' של 62א",
+                  "ס' 81ב(ב)(3); הוראת ביצוע 9/2026 ס' 3.3.2")
+
+    # ── 20% transitional track (LAW-3343 s.5, tax years 2025-2030) ──
+    excess_for_tax = s.excess
+    rem = i.start_date_profits_remaining
+    t20 = ctx.p.num("s81.transitional_20pct_track") / 100
+    track20 = False
+    if rem and 2025 <= ctx.year <= 2030 and div >= t20 * rem:
+        track20 = True
+        excess_for_tax = pos(s.excess - rem)
+        ctx.trace.add(ent, STAGE, "track20", "מסלול 20% (הוראת מעבר): הפחתת יתרת הרווחים ליום התחילה", excess_for_tax,
+                      f"דיבידנד {fmt(div)} ≥ 20% × {fmt(rem)}; {fmt(s.excess)} − {fmt(rem)}", "ס' 5 לחוק (ס\"ח 3343); חוזר 7/2025")
 
     min_pct = ctx.p.rate("s81.min_distribution_of_accumulated")
     min_ex = ctx.p.rate("s81.min_distribution_of_excess")
     need_acc = min_pct * s.accumulated
-    need_ex = min_ex * s.excess
-    s.min_dividend_to_avoid = min(need_acc, need_ex) if s.excess > 0 else ZERO
+    need_ex = min_ex * excess_for_tax
+    s.min_dividend_to_avoid = min(need_acc, need_ex) if excess_for_tax > 0 else ZERO
     ctx.trace.add(ent, STAGE, "min_dividend", "דיבידנד מינימלי לפטור", s.min_dividend_to_avoid,
-                  f"min({fmt_rate(min_pct)} × {fmt(s.accumulated)} = {fmt(need_acc)}; {fmt_rate(min_ex)} × {fmt(s.excess)} = {fmt(need_ex)})",
+                  f"min({fmt_rate(min_pct)} × {fmt(s.accumulated)} = {fmt(need_acc)}; {fmt_rate(min_ex)} × {fmt(excess_for_tax)} = {fmt(need_ex)})",
                   "ס' 81ב(ב)")
 
     exemptions = []
-    if s.excess == 0:
-        exemptions.append("אין רווחים עודפים")
+    if excess_for_tax == 0:
+        exemptions.append("אין רווחים עודפים" + (" (אחרי מסלול 20%)" if track20 else ""))
     if div >= need_acc:
         exemptions.append(f"חולק דיבידנד ≥ {fmt_rate(min_pct)} מהרווחים הנצברים")
-    elif s.excess > 0 and div >= need_ex:
-        exemptions.append(f"חולק דיבידנד ≥ {fmt_rate(min_ex)} מהרווחים העודפים")
+    elif excess_for_tax > 0 and div > need_ex:
+        exemptions.append(f"חולק דיבידנד > {fmt_rate(min_ex)} מהרווחים העודפים")
     ratio = ctx.p.rate("s81.loss_exemption_ratio")
     if loss_in_year > ratio * s.accumulated:
-        exemptions.append(f"הפסד בשנת המס ({fmt(loss_in_year)}) עולה על {fmt_rate(ratio)} מהרווחים הנצברים")
-    t20 = ctx.p.raw_value("s81.transitional_2025_distribution")
-    if ctx.year == 2025 and t20 is not None and i.trapped_profits_31_12_2024:
-        need20 = Decimal(t20) / 100 * i.trapped_profits_31_12_2024
-        if div >= need20:
-            exemptions.append(f"הוראת מעבר 2025: חולקו ≥ {t20}% מהרווחים הכלואים ליום 31.12.2024 ({fmt(need20)})")
+        exemptions.append(f"הפסד שוטף בשנת המס ({fmt(loss_in_year)}) עולה על {fmt_rate(ratio)} מהרווחים הנצברים")
 
     if exemptions:
         s.exemption = "; ".join(exemptions)
         ctx.trace.add(ent, STAGE, "exempt", "פטור מתוספת המס", True, s.exemption, REF)
         return s
 
-    s.taxable = pos(s.excess - div)
+    s.taxable = pos(excess_for_tax - div)
     rate = ctx.p.rate("s81.extra_tax_rate")
     s.tax = rate * s.taxable
     ctx.trace.add(ent, STAGE, "taxable", "יתרת רווחים עודפים לפי ס' 81ב(א) (שדה 073)", s.taxable,
-                  f"{fmt(s.excess)} − {fmt(div)}", REF)
-    ctx.trace.add(ent, STAGE, "tax", "תוספת מס 2%", s.tax, f"{fmt_rate(rate)} × {fmt(s.taxable)}", "ס' 81ב(א)")
+                  f"{fmt(excess_for_tax)} − {fmt(div)}", REF)
+    ctx.trace.add(ent, STAGE, "tax", "תוספת מס 2%", s.tax, f"{fmt_rate(rate)} × {fmt(s.taxable)}", "ס' 81ב(א)",
+                  "אינה מותרת בניכוי ואינה ניתנת לזיכוי כנגד מס חברות; אין מקדמות")
     gap = pos(s.min_dividend_to_avoid - div)
-    dl = ctx.p.raw_value("s81.report_deadline")
     ctx.alert("S81B_DUE", "critical", ent,
-              f"צפויה תוספת מס 2% בסך {fmt(s.tax)} ₪. חלוקת דיבידנד נוספת של {fmt(gap)} ₪ "
-              f"(עד {fmt(s.min_dividend_to_avoid)} ₪ בסה\"כ) תבטל אותה. מועד דיווח המסלול: {dl[3:]}.{dl[:2]}.{ctx.year + 1}; "
-              f"לאחריו – תוספת המס בלבד, בצירוף הפרשי הצמדה וריבית.", REF)
+              f"צפויה תוספת מס 2% בסך {fmt(s.tax)} ₪. חלוקת דיבידנד נוספת (ששולם בגינה מס) של כ-{fmt(gap)} ₪ בשנת המס "
+              f"תבטל אותה. מועד התשלום: מועד הגשת הדוח לפי ס' 132 (31.5.{ctx.year + 1} או ארכת מייצג) או תום השנה העוקבת – "
+              f"המוקדם; לאחריו הפרשי הצמדה וריבית.", "ס' 81ב, 81ו(ג)")
     return s
