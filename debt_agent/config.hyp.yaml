@@ -11,6 +11,8 @@ alerts:
   recent_payment_days: 60
   no_payment_days: 120
   formula_gap_tolerance: 100
+# חשבונית מס שפתוחה ב-Hyp: false = לא חוב לגבייה (מופקת עם קבלת התשלום) אלא פריט לאימות; true = נספרת כחוב
+tax_invoice_open_is_debt: false
 # מחזור פנייה חוזרת (ימים) כשלא נקבע מועד בלוח
 contact_cadence_days: {דחוף: 7, לטיפול: 14, מעקב: 30}
 weekly_capacity: 60             # מספר פניות בשבוע למנהלת הגבייה

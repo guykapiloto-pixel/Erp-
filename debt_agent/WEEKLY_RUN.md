@@ -1,14 +1,16 @@
 # ריצה שבועית – ניתוח גבייה
 
 1. **ייצוא הלוח** "יעל EK-גבייה" (קריאה בלבד) עם ArtifactData `list`, `out_dir=<board>`, `limit` 1000, לאוספים:
-   `hyp`, `custList`, `cfile`, `contacts`.
+   `hyp`, `custList`, `cfile`, `contacts`, `checks`, `clients`, `failed`, `cheques`.
 2. **הרצה:**
    ```bash
    cd debt_agent
    python -m debtcheck hyp --config config.hyp.yaml --board <board> --out collections_report_<YYYY-MM-DD>.xlsx \
           [--csv report.csv]
    ```
-   `--csv` הוא דוח המסמכים המלא מ-Hyp, ובלעדיו אין בקרת נוסחה. החוב הפתוח והתשלומים נלקחים מהלוח, ש-Hyp מעדכן.
+   `--csv` הוא דוח המסמכים המלא מ-Hyp. **בלעדיו אין קיזוז של ספירה כפולה** (חשבון עסקה פתוח שכבר הופקה בגינו
+   חשבונית שלא שויכה), ולכן הסכומים גבוהים מדי. בלי הקובץ הדוח נשען על כללי הלוח בלבד: חיוב קבוע לא נספר,
+   יתרות שיעל בדקה יורדות, שיקים דחויים מנוכים.
 3. **בקרות שחייבות לעבור לפני הפצה:**
    - סך החוב הפתוח שחושב שווה לסה"כ בלוח (הפרש עד ₪2).
    - אין שגיאה `BOARD_TOTAL_DIFF`.

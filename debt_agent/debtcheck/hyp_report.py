@@ -9,7 +9,8 @@ from pathlib import Path
 from .hyp import AGING, C, I, IR, R, T, Customer, Issue
 
 AG = [a[2] for a in AGING]
-FILL = {"דחוף": "F8CBAD", "לטיפול": "FCE4D6", "לבדיקה": "FFE699", "מעקב": "DDEBF7", "חיוב אוטומטי": "E2EFDA",
+FILL = {"דחוף": "F8CBAD", "לטיפול": "FCE4D6", "מעקב": "DDEBF7", "ממתין להנהלה": "FFE699", "לסגירה ב-Hyp": "E4DFEC",
+        "חיוב קבוע": "E2EFDA", "נבדק – תקין": "E2EFDA",
         "מוחרג": "D9D9D9", "תקין": "FFFFFF"}
 SEV = {"error": "שגיאה", "warning": "אזהרה", "info": "מידע"}
 
@@ -59,31 +60,39 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
     ws = sheet("סיכום", ["נושא", "ערך"], first=True)
     pr = Counter(c.priority for c in custs)
     tot = lambda attr, cond=lambda c: True: sum((getattr(c, attr) for c in custs if cond(c)), Decimal(0))
+    Z = Decimal(0)
     rows = [
         ("תמונת מצב הלוח (מסמכים פתוחים ב-Hyp)", summary["snapshot"]),
         ("מקור היסטוריה", summary.get("history", "")),
         ("תאריך גיול", _dt(as_of)),
         ("לקוחות בניתוח", summary["customers"]),
         ("מסמכים בהיסטוריה (קובץ Hyp)", summary["docs"]),
-        ("חוב פתוח לפי Hyp", _f(summary["open_total"])),
-        ("  מתוכו חשבונות עסקה", _f(tot("open_tx"))),
-        ("  מתוכו חשבוניות מס שלא שולמו", _f(tot("open_tax"))),
-        ("  ייתכן ששולם (תשלום באותו סכום שלא שויך)", _f(tot("possibly_paid"))),
-        ("  התקבל אחרי עדכון הלוח", _f(tot("paid_after_snapshot"))),
-        ("  מוחרגים", _f(tot("open_debt", lambda c: c.excluded))),
-        ("חוב נטו לגבייה (אומדן)", _f(tot("net_to_collect", lambda c: not c.excluded))),
-        ("חוב לפי הנוסחה (עסקה − מס − מס קבלה + זיכוי)", _f(tot("formula"))),
         ("", ""),
-    ] + [(f"גיול {a}", _f(sum((c.aging.get(a, 0) for c in custs), Decimal(0)))) for a in AG] + [("", "")] + \
-        [(f"לקוחות – {k}", pr.get(k, 0)) for k in FILL] + [("", ""),
-         ("שגיאות נתונים", sum(i.severity == "error" for i in issues)),
-         ("אזהרות", sum(i.severity == "warning" for i in issues))]
+        ("חוב פתוח לפי Hyp (ברוטו)", _f(summary["open_total"])),
+        ("(−) נספר כפול: מסמך פתוח שכבר מכוסה בחשבונית/תשלום שלא שויכו", -_f(tot("double_counted"))),
+        ("(−) לקוחות בחיוב קבוע – לא נספרים (כמו בלוח)", -_f(tot("net_to_collect", lambda c: c.priority == "חיוב קבוע"))),
+        ("(−) יעל בדקה: תקין, ירד מהיתרה", -_f(tot("net_to_collect", lambda c: c.priority == "נבדק – תקין"))),
+        ("(−) מוחרגים / הוסתרו בלוח", -_f(tot("net_to_collect", lambda c: c.priority == "מוחרג"))),
+        ("(−) חשבוניות מס פתוחות ב-Hyp – לאימות תשלום, לא לגבייה", -_f(tot("tax_unverified"))),
+        ("(−) שיקים דחויים בידינו ותשלומים אחרי עדכון הלוח",
+         -_f(sum((c.open_debt - c.double_counted - c.tax_unverified - c.net_to_collect for c in custs), Z))),
+        ("(−) ממתין לתשובת הנהלה (גיא / דקל)", -_f(tot("net_to_collect", lambda c: c.priority == "ממתין להנהלה"))),
+        ("= חוב לגבייה – לפנייה ללקוחות", _f(tot("collectible"))),
+        ("", ""),
+        ("חוב לפי הנוסחה ברמת הלקוח (עסקה − מס − מס קבלה + זיכוי), סה\"כ", _f(tot("formula"))),
+        ("", ""),
+        ("קבוצה", "לקוחות | פתוח ב-Hyp | נטו"),
+    ] + [(k, f"{pr.get(k, 0)} | {_f(tot('open_debt', lambda c, k=k: c.priority == k)):,.0f} | "
+             f"{_f(tot('net_to_collect', lambda c, k=k: c.priority == k)):,.0f}") for k in FILL if k != "תקין"] + [
+        ("", ""),
+        ("שגיאות נתונים", sum(i.severity == "error" for i in issues)),
+        ("אזהרות", sum(i.severity == "warning" for i in issues))]
     for r in rows:
         ws.append(list(r))
     for (cell,) in ws.iter_rows(min_row=2, min_col=2, max_col=2):
         if isinstance(cell.value, float):
             cell.number_format = money
-    finish(ws, [48, 28])
+    finish(ws, [62, 34])
 
     # 1א. רשימת השבוע – למי לפנות ומתי
     wk = summary.get("week_end")
@@ -107,19 +116,20 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
 
     # 2. למי לפנות
     ws = sheet("למי לפנות", ["עדיפות", "פעולה", "מתי", "לקוח", "ח.פ/ת.ז", "מס' הנה\"ח", "טלפון", "מייל", "איש קשר", "חוב פתוח ב-Hyp",
-                              "ייתכן ששולם", "שולם אחרי עדכון", "לגבייה (נטו)", "מסמך פתוח ותיק", "ימים", "מס' מסמכים פתוחים",
-                              "תשלום אחרון", "סכום תשלום אחרון", "נגבה 12 חודשים", "חיוב אוטומטי", "סיבות"])
+                              "נספר כפול (מכוסה)", "שיקים / שולם אחרי עדכון", "לגבייה (נטו)", "מסמך פתוח ותיק", "ימים", "מס' מסמכים פתוחים",
+                              "תשלום אחרון", "סכום תשלום אחרון", "נגבה 12 חודשים", "חיוב קבוע", "סכום שנדרש בלוח", "סיבות"])
     for c in custs:
         if c.priority == "תקין":
             continue
         lp = c.last_payment
-        ws.append([c.priority, c.action, c.when, c.name, c.crn, c.bk, c.phone, c.email, c.contact, _f(c.open_debt), _f(c.possibly_paid),
-                   _f(c.paid_after_snapshot), _f(c.net_to_collect), _dt(c.oldest_open), c.oldest_days,
+        ws.append([c.priority, c.action, c.when, c.name, c.crn, c.bk, c.phone, c.email, c.contact, _f(c.open_debt), _f(c.double_counted),
+                   _f(c.open_debt - c.double_counted - c.tax_unverified - c.net_to_collect), _f(c.net_to_collect), _dt(c.oldest_open), c.oldest_days,
                    len(c.open_docs), _dt(lp.doc_date) if lp else "", _f(lp.total) if lp else None, _f(c.paid_12m),
-                   "כן" if c.auto_charge else "", " | ".join(c.reasons)])
+                   "כן" if c.auto_charge else "", _f(c.demanded) if c.demanded is not None else None,
+                   " | ".join(c.reasons)])
         ws.cell(ws.max_row, 1).fill = PatternFill("solid", fgColor=FILL.get(c.priority, "FFFFFF"))
-    finish(ws, [11, 16, 26, 30, 11, 9, 13, 24, 12, 12, 11, 11, 12, 12, 7, 8, 11, 11, 12, 8, 90],
-           money_cols=(10, 11, 12, 13, 18, 19))
+    finish(ws, [13, 18, 26, 30, 11, 9, 13, 24, 12, 12, 11, 11, 12, 12, 7, 8, 11, 11, 12, 8, 11, 90],
+           money_cols=(10, 11, 12, 13, 18, 19, 21))
 
     # 3. פירוק חוב
     ws = sheet("פירוק חוב", ["לקוח", "ח.פ/ת.ז", "חשבונות עסקה", "חשבוניות מס", "חשבוניות מס קבלה", "קבלות", "זיכויים",
@@ -138,18 +148,17 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
         cell.font = Font(bold=True)
     finish(ws, [30, 11] + [12] * 12 + [10] + [11] * len(AG), money_cols=tuple(range(3, 15)) + tuple(range(16, 16 + len(AG))))
 
-    # 3א. בקרת פערים מול הנוסחה
-    ws = sheet("בקרת פערים", ["לקוח", "ח.פ/ת.ז", "חוב לפי הנוסחה", "חוב פתוח ב-Hyp", "פער", "חשבונות עסקה שנסגרו",
-                              "חשבוניות מס + מס קבלה − זיכויים", "קבלות", "פירוש"])
-    for c in sorted(custs, key=lambda c: -abs(c.gap)):
-        if abs(c.gap) <= gap_tol:
+    # 3א. נספר כפול – לסגירה / אימות ב-Hyp
+    ws = sheet("נספר כפול", ["לקוח", "ח.פ/ת.ז", "עדיפות", "פתוח ב-Hyp", "נספר כפול (מכוסה)", "חוב נטו", "חשבונות עסקה",
+                             "חשבוניות מס", "חשבוניות מס קבלה", "זיכויים", "חוב לפי הנוסחה", "מסמכים פתוחים"])
+    for c in sorted(custs, key=lambda c: -c.double_counted):
+        if c.double_counted <= gap_tol:
             continue
         s_ = c.sums
-        ws.append([c.name, c.crn, _f(c.formula), _f(c.open_debt), _f(c.gap), _f(c.closed_tx),
-                   _f(s_[I] + s_[IR] - s_[C]), _f(s_[R]),
-                   "חשבונות עסקה נסגרו ללא חשבונית/תשלום – לוודא שהסגירה מוצדקת" if c.gap > 0 else
-                   "חיוב ישיר/הוראת קבע ללא חשבון עסקה, או חשבוניות מס פתוחות שהנוסחה מנכה"])
-    finish(ws, [30, 11, 13, 13, 13, 13, 16, 12, 70], money_cols=(3, 4, 5, 6, 7, 8))
+        ws.append([c.name, c.crn, c.priority, _f(c.open_debt), _f(c.double_counted), _f(c.net_to_collect), _f(s_[T]),
+                   _f(s_[I]), _f(s_[IR]), _f(s_[C]), _f(c.formula),
+                   ", ".join(f"{o.num} ({_f(o.remaining):,.0f})" for o in sorted(c.open_docs, key=lambda o: o.doc_date))])
+    finish(ws, [30, 11, 13, 13, 14, 12, 13, 13, 14, 11, 13, 80], money_cols=(4, 5, 6, 7, 8, 9, 10, 11))
 
     # 4. מסמכים פתוחים
     ws = sheet("מסמכים פתוחים", ["לקוח", "סוג", "מספר", "תאריך", "ימים", "גיול", "סכום מקורי", "יתרה פתוחה",
@@ -174,7 +183,11 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
     # 6. הגדרות ושיטה
     ws = sheet("שיטה", ["נושא", "הסבר"])
     for r in [
-        ("חוב פתוח", "יתרת המסמכים הפתוחים ב-Hyp (חשבונות עסקה + חשבוניות מס שלא שולמו), לפי הלוח"),
+        ("חוב פתוח (ברוטו)", "יתרת המסמכים הפתוחים ב-Hyp (חשבונות עסקה + חשבוניות מס שלא שולמו), לפי הלוח"),
+        ("נספר כפול", "חשבון עסקה שנשאר פתוח ב-Hyp אף שכבר הופקה בגינו חשבונית מס / חשבונית מס קבלה שלא שויכה אליו. "
+                      "החוב על חשבונות עסקה = הנמוך מבין: חשבונות העסקה הפתוחים, והנוסחה ברמת הלקוח. חשבונית מס פתוחה מתווספת"),
+        ("העבודה של יעל", "מהלוח: בדיקת יתרה (תקין = ירד מהיתרה), חיוב קבוע (לא נספר), חיוב אוטומטי שנכשל, שיקים דחויים, "
+                          "תיוג לבדיקה מול גיא/דקל, סכום שנדרש, פנייה אחרונה ומועד פנייה מחדש, רשימות חריגים"),
         ("חוב לפי הנוסחה", "Σ חשבונות עסקה − Σ חשבוניות מס − Σ חשבוניות מס קבלה + Σ זיכויים, מכל ההיסטוריה עד תאריך הלוח"),
         ("פער", "הפרש בין השניים. חיובי = חשבונות עסקה שנסגרו ב-Hyp ללא חשבונית. שלילי = חיוב ישיר/הוראת קבע/חשבוניות מס פתוחות"),
         ("ייתכן ששולם", "מסמך פתוח שקיים אחריו תשלום (חשבונית מס קבלה/קבלה) באותו סכום שלא שויך למסמך אחר – יש לאמת ולסגור ב-Hyp"),

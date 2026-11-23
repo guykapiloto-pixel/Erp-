@@ -145,6 +145,19 @@ class Customer:
     contact_on: date | None = None
     hidden: bool = False
     handler: str = ""
+    # מה שיעל כבר עשתה בלוח
+    demanded: Decimal | None = None       # סכום שנדרש מהלקוח
+    check_status: str = ""                # בדיקת יתרה: ok / followup / gap / closed
+    check_note: str = ""
+    review_with: str = ""                 # ממתין לתשובת גיא / דקל
+    tags: list = field(default_factory=list)          # רשימות חריגים בלוח
+    failed_charge: date | None = None     # חיוב אוטומטי שנכשל וטרם טופל
+    cheques_pending: Decimal = D0         # שיקים דחויים שבידינו
+    collectible: Decimal = D0             # נטו לגבייה אם הלקוח ברשימת הפנייה, אחרת 0
+    double_counted: Decimal = D0          # חוב פתוח ב-Hyp שכבר מכוסה בחשבוניות/תשלומים שלא שויכו
+    has_history: bool = True
+    tax_is_debt: bool = False
+    tax_unverified: Decimal = D0          # חשבוניות מס פתוחות ב-Hyp – לאימות שהתקבל תשלום
     when: str = ""
     reversals: list = field(default_factory=list)     # (קבלה מקורית | None, קבלה שלילית)
     score: float = 0.0
@@ -236,7 +249,9 @@ def load_board(snapshot_dir: str | Path) -> dict:
             "auto": set(map(int, (hyp.get("auto") or {}).get("ids", []))),
             "bk": {int(r[0]): str(r[1]) for r in (hyp.get("bk") or {}).get("rows", []) if r[1]},
             "customers": custs, "warnings": warnings, "pay": hyp.get("pay"),
-            "cfile": _load_coll(root / "cfile"), "contacts": list(_load_coll(root / "contacts").values())}
+            "cfile": _load_coll(root / "cfile"), "contacts": list(_load_coll(root / "contacts").values()),
+            "checks": list(_load_coll(root / "checks").values()), "lists": list(_load_coll(root / "clients").values()),
+            "failed": list(_load_coll(root / "failed").values()), "cheques": list(_load_coll(root / "cheques").values())}
 
 
 def _load_coll(d: Path) -> dict:
@@ -245,8 +260,10 @@ def _load_coll(d: Path) -> dict:
 
 # ---------------------------------------------------------------- analysis
 
-ACTIONS = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה ללקוח", "מעקב": "פנייה ללקוח", "לבדיקה": "בירור פנימי ב-Hyp",
-           "חיוב אוטומטי": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
+ACTIONS = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה ללקוח", "מעקב": "פנייה ללקוח",
+           "לסגירה ב-Hyp": "סגירת מסמך ב-Hyp", "ממתין להנהלה": "ממתין לגיא/דקל", "נבדק – תקין": "ללא פעולה",
+           "חיוב קבוע": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
+ORDER = ["דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "לסגירה ב-Hyp", "חיוב קבוע", "נבדק – תקין", "מוחרג", "תקין"]
 
 def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None
             ) -> tuple[list[Customer], list[Issue], dict]:
@@ -287,12 +304,14 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
         return f"crn:{crn}" if crn else f"name:{nk}"
 
     unresolved = Counter()
+    owner: dict = {}
     for d in docs:
         key = resolve(d.name, d.crn)
         if key not in custs:
             custs[key] = Customer(key, None, d.name, d.crn)
             unresolved[key] += 1
         cu = custs[key]
+        owner[(d.type, d.num)] = key
         (cu.docs if d.issued <= snap else cu.later_docs).append(d)
         if not cu.phone and d.phone:
             cu.phone = d.phone
@@ -338,6 +357,53 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
         if cu and dd and (cu.last_contact is None or dd > cu.last_contact):
             cu.last_contact = dd
 
+    by_nk: dict = defaultdict(list)
+    for cu in custs.values():
+        by_nk[name_key(cu.name)].append(cu)
+
+    def find(hid, name):
+        if hid and f"h:{int(hid)}" in custs:
+            return custs[f"h:{int(hid)}"]
+        m = by_nk.get(name_key(name or ""), [])
+        return m[0] if len(m) == 1 else None
+
+    for k, f in (board.get("cfile") or {}).items():
+        cu = find(f.get("hypId"), f.get("name"))
+        if not cu:
+            continue
+        if f.get("demanded") is not None:
+            cu.demanded = Decimal(str(f["demanded"]))
+        cu.review_with = norm_text(f.get("review"))
+        dc = f.get("debtCheck") or {}
+        if dc.get("st"):
+            cu.check_status, cu.check_note = ("ok" if dc["st"] == "ok" else "gap"), norm_text(dc.get("note"))
+    for ck in board.get("checks") or []:
+        cu = find(None, ck.get("name"))
+        if cu is None:
+            if ck.get("status") in ("ok", "closed", "followup", "gap"):
+                issues.append(Issue("info", "CHECK_NOT_MATCHED", f"בדיקת יתרה בלוח ({ck.get('status')}) ללקוח שלא זוהה",
+                                    norm_text(ck.get("name"))))
+            continue
+        if ck.get("status") and ck["status"] != "todo":
+            cu.check_status, cu.check_note = ck["status"], norm_text(ck.get("note"))
+    LIST_HE = {"exceptions": "לקוח חריג", "problem": "לקוח בעייתי", "pension": "חוב שירותי פנסיה"}
+    for r in board.get("lists") or []:
+        if r.get("archived") or r.get("status") == "done" or r.get("cat") not in LIST_HE:
+            continue
+        cu = find(r.get("hypId"), r.get("name"))
+        if cu:
+            cu.tags.append(LIST_HE[r["cat"]] + (f": {norm_text(r.get('note'))[:80]}" if r.get("note") else ""))
+    for x in board.get("failed") or []:
+        cu = find(x.get("hypId"), x.get("name"))
+        lf = _iso(x.get("lastFail"))
+        handled = x.get("status") == "handled" and (not x.get("handledAt") or str(x["handledAt"])[:10] >= str(lf))
+        if cu and lf and not handled:
+            cu.failed_charge = lf
+    for q in board.get("cheques") or []:
+        cu = find(q.get("hypId"), q.get("client"))
+        if cu and q.get("status") == "pending":
+            cu.cheques_pending += Decimal(str(q.get("amount") or 0))
+
     for key, n in unresolved.items():
         cu = custs[key]
         issues.append(Issue("warning", "NOT_IN_BOARD", f"{n} מסמכים של לקוח שלא נמצא ברשימת הלקוחות בלוח "
@@ -349,11 +415,11 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
 
     # open documents (board)
     csv_index = {(d.type, d.num): d for d in docs}
-    names_open = {int(r[0]): r[1] for r in board["open"]["rows"]}
+    names_open = {int(r[0] or 0): r[1] for r in board["open"]["rows"]}
     base = board["opendocs"].get("base", "")
     orphan = Counter()
     for h, rows in board["opendocs"]["rows"]:
-        h = int(h)
+        h = int(h or 0)
         for x in rows:
             typ = BOARD_TYPE.get(int(x[2]), str(x[2]))
             num = str(x[1])
@@ -369,6 +435,15 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
                 custs[key] = Customer(key, None, src.name if src else names_open.get(h, "ללא כרטיס לקוח"),
                                       src.crn if src else "")
             cu = custs[key]
+            if src is not None and owner.get((typ, num)) not in (None, key):
+                # המסמך רשום ב-Hyp על כרטיס הלקוח הזה אך בקובץ מופיע בשם אחר: ההיסטוריה עוברת עם המסמך,
+                # אחרת חשבון העסקה הפתוח חסר בנוסחה של הלקוח
+                prev = custs[owner[(typ, num)]]
+                for lst in (prev.docs, prev.later_docs):
+                    if src in lst:
+                        lst.remove(src)
+                cu.docs.append(src)
+                owner[(typ, num)] = key
             if not h:
                 orphan[cu.name] += 1
             elif doc_key and doc_key != key:
@@ -400,6 +475,8 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
     # per customer
     out = []
     for cu in custs.values():
+        cu.has_history = has_history
+        cu.tax_is_debt = bool(cfg.get("tax_invoice_open_is_debt", False))
         _compute(cu, as_of, snap)
         if not has_history:
             cu.formula, cu.gap = cu.open_debt, D0      # אין היסטוריה מלאה – בקרת הנוסחה לא רלוונטית
@@ -410,7 +487,7 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
             out.append(cu)
 
     _spread(out, cfg, as_of)
-    order = {"דחוף": 0, "לטיפול": 1, "לבדיקה": 2, "מעקב": 3, "חיוב אוטומטי": 4, "מוחרג": 5, "תקין": 6}
+    order = {k: i for i, k in enumerate(ORDER)}
     out.sort(key=lambda c: (order.get(c.priority, 9), -c.score, -c.open_debt))
 
     board_total = Decimal(str(board["open"].get("total", 0)))
@@ -466,7 +543,21 @@ def _compute(cu: Customer, as_of: date, snap: date) -> None:
             o.possibly_paid_by = p
             cu.possibly_paid += o.remaining
     cu.paid_after_snapshot = sum((p.total for p in pays if p.issued > snap and id(p) not in used), D0)
-    cu.net_to_collect = max(cu.open_debt - cu.possibly_paid - cu.paid_after_snapshot, D0)
+    if cu.has_history:
+        # מניעת ספירה כפולה: חשבון עסקה שנשאר פתוח ב-Hyp למרות שכבר הופקה בגינו חשבונית מס / חשבונית מס קבלה
+        # שלא שויכה אליו. החוב = min(חשבונות עסקה פתוחים, הנוסחה ברמת הלקוח): עסקה − מס − מס קבלה + זיכוי.
+        # חשבונית מס מופקת עם קבלת התשלום (בסיס מזומן), ולכן חשבונית מס שפתוחה ב-Hyp אינה חוב לגבייה אלא
+        # פריט לאימות – אלא אם הוגדר tax_invoice_open_is_debt.
+        if cu.tax_is_debt:
+            base = max(D0, min(cu.open_tx, cu.formula + cu.open_tax)) + cu.open_tax
+        else:
+            base = max(D0, min(cu.open_tx, cu.formula))
+            cu.tax_unverified = cu.open_tax
+        cu.double_counted = cu.open_debt - cu.tax_unverified - base
+        cu.possibly_paid = min(cu.possibly_paid, cu.double_counted)      # מידע בלבד – כבר כלול בקיזוז
+    else:
+        base = max(cu.open_debt - cu.possibly_paid, D0)
+    cu.net_to_collect = max(base - cu.paid_after_snapshot - cu.cheques_pending, D0)
 
     aging: dict = defaultdict(lambda: D0)
     for o in cu.open_docs:
@@ -478,72 +569,78 @@ def _compute(cu: Customer, as_of: date, snap: date) -> None:
 
 
 def _classify(cu, a, gap_tol, as_of):
+    """סיווג לפי החוב נטו ולפי מה שיעל כבר עשתה בלוח. הסדר קובע: החלטה שלה גוברת על חישוב."""
     min_debt = Decimal(str(a.get("min_debt", 1)))
-    urgent_amount = Decimal(str(a.get("urgent_amount", 20000)))
+    urgent_amount = Decimal(str(a.get("urgent_amount", 10000)))
     urgent_min = Decimal(str(a.get("urgent_min_amount", 5000)))
     urgent_days = int(a.get("urgent_days", 90))
     followup_days = int(a.get("followup_days", 30))
-    auto_grace = int(a.get("auto_charge_grace_days", 45))
-    recent_days = int(a.get("recent_payment_days", 60))
     no_pay_days = int(a.get("no_payment_days", 120))
     r = cu.reasons
-    if abs(cu.gap) > gap_tol and (cu.docs or cu.open_docs):
-        if cu.gap > 0:
-            r.append(f"לפי הנוסחה {cu.formula:,.0f} וב-Hyp {cu.open_debt:,.0f}: חשבונות עסקה בסך "
-                     f"{cu.closed_tx:,.0f} נסגרו, חלקם ללא חשבונית/תשלום – לוודא שלא נסגרו בטעות")
-        else:
-            r.append(f"לפי הנוסחה {cu.formula:,.0f} וב-Hyp {cu.open_debt:,.0f}: חשבוניות/תשלומים ללא חשבון עסקה "
-                     "(חיוב ישיר, הוראת קבע) או חשבוניות מס פתוחות")
-    for orig, neg in cu.reversals:
-        r.append(f"קבלה שלילית {neg.num} ({neg.total:,.0f}) {neg.doc_date:%d/%m/%Y}"
-                 + (f" מבטלת קבלה {orig.num} – החזר/שיק חוזר" if orig else " ללא קבלה מקורית תואמת"))
-    if cu.excluded or cu.hidden:
-        cu.priority = "מוחרג"
-        r.insert(0, "מוחרג לפי הגדרה" if cu.excluded else "הוסתר מרשימת החוב הפתוח בלוח")
-        return
-    if cu.open_debt < min_debt:
-        cu.priority = "תקין"          # אין חוב ב-Hyp; פער מול הנוסחה (אם יש) מופיע בגיליון בקרת הפערים
-        return
-    if cu.hyp_id is None:
-        r.insert(0, "חוב על מסמכים ללא כרטיס לקוח ב-Hyp")
-    if cu.possibly_paid:
-        r.append(f"{cu.possibly_paid:,.0f} ₪ במסמכים פתוחים שנמצא להם תשלום באותו סכום – ייתכן ששולמו ולא נסגרו")
+    net, days = cu.net_to_collect, cu.oldest_days or 0
+    lp = cu.last_payment
+    since_pay = (as_of - lp.doc_date).days if lp else None
+    cu.score = float(net) * (1 + min(days, 730) / 365)
+
+    # הקשר – מופיע תמיד
+    if cu.double_counted > gap_tol:
+        r.append(f"ב-Hyp פתוח {cu.open_debt:,.0f} ₪, מתוכם {cu.double_counted:,.0f} ₪ כבר מכוסים בחשבוניות/תשלומים "
+                 "שלא שויכו לחשבון העסקה – לסגור ב-Hyp")
+    if cu.cheques_pending:
+        r.append(f"שיקים דחויים בידינו {cu.cheques_pending:,.0f} ₪")
     if cu.paid_after_snapshot:
         r.append(f"התקבלו {cu.paid_after_snapshot:,.0f} ₪ אחרי עדכון הלוח")
     if cu.open_tax:
-        r.append(f"חשבוניות מס פתוחות {cu.open_tax:,.0f} ₪ (המע\"מ כבר דווח ושולם)")
-    days = cu.oldest_days or 0
-    lp = cu.last_payment
-    since_pay = (as_of - lp.doc_date).days if lp else None
-    if lp is None:
-        r.append("לא התקבל אף תשלום מאז פתיחת החברה")
-    elif since_pay >= no_pay_days:
-        r.append(f"תשלום אחרון לפני {since_pay} ימים ({lp.doc_date:%d/%m/%Y})")
-    net = cu.net_to_collect
-    cu.score = float(net) * (1 + min(days, 730) / 365)
-    if net < min_debt:
-        cu.priority = "לבדיקה"
-        r.insert(0, "כל החוב הפתוח מכוסה בתשלומים שלא שויכו – לסגור ב-Hyp")
-        return
-    head = f"לגבייה {net:,.0f} ₪, מסמך פתוח ותיק {days} ימים ({cu.oldest_open:%d/%m/%Y})"
-    paying = since_pay is not None and since_pay <= recent_days
-    if cu.auto_charge and days < auto_grace:
-        cu.priority = "חיוב אוטומטי"
-        r.insert(0, "בחיוב אוטומטי פעיל – החוב צפוי להיגבות")
-        return
-    if cu.auto_charge or (paying and net < urgent_amount):
-        # משלם שוטף/בהוראת קבע ועדיין יש מסמך ישן: לרוב חשבון עסקה שלא נסגר או חוב ישן נפרד – בירור ולא פנייה דחופה
-        cu.priority = "לבדיקה" if days >= followup_days else "מעקב"
-        r.insert(0, head + (" – בחיוב אוטומטי: לבדוק אם החיוב נכשל או שהמסמך לא נסגר" if cu.auto_charge
-                            else f" – הלקוח משלם שוטף (תשלום אחרון {lp.doc_date:%d/%m/%Y}): לבדוק אם המסמך עדיין רלוונטי"))
-        return
-    if net >= urgent_amount or (days >= urgent_days and net >= urgent_min):
-        cu.priority = "דחוף"
-    elif days >= followup_days:
-        cu.priority = "לטיפול"
+        r.append(f"חשבונית מס פתוחה ב-Hyp {cu.open_tax:,.0f} ₪ – לוודא שהתקבל תשלום"
+                 + ("" if cu.tax_unverified else " (נספרת כחוב)"))
+    for t in cu.tags:
+        r.append(t)
+    if cu.check_status in ("followup", "gap") and cu.check_note:
+        r.append(f"בדיקת יעל: {cu.check_note[:120]}")
+    for orig, neg in cu.reversals:
+        r.append(f"קבלה שלילית {neg.num} ({neg.total:,.0f}) {neg.doc_date:%d/%m/%Y} – החזר/שיק חוזר")
+    if lp is None and cu.has_history:
+        r.append("לא התקבל אף תשלום")
+    elif since_pay is not None and since_pay >= no_pay_days:
+        r.append(f"תשלום אחרון לפני {since_pay} ימים")
+
+    if cu.excluded or cu.hidden:
+        cu.priority = "מוחרג"
+        r.insert(0, "מוחרג לפי הגדרה" if cu.excluded else "הוסתר מרשימת החוב הפתוח בלוח")
+    elif cu.open_debt < min_debt:
+        cu.priority = "תקין"
+    elif cu.check_status in ("ok", "closed"):
+        cu.priority = "נבדק – תקין"
+        r.insert(0, "יעל בדקה: תקין, ירד מיתרת החייבים" + (f" ({cu.check_note[:100]})" if cu.check_note else ""))
+    elif cu.failed_charge:
+        cu.priority = "דחוף" if net >= urgent_min else "לטיפול"
+        r.insert(0, f"חיוב אוטומטי נכשל ב-{cu.failed_charge:%d/%m/%Y} וטרם טופל – לגבייה {net:,.0f} ₪")
+    elif cu.auto_charge:
+        cu.priority = "חיוב קבוע"
+        r.insert(0, "בחיוב קבוע חודשי – לא נספר ביתרת החייבים (כמו בלוח)")
+    elif net < min_debt and cu.tax_unverified >= min_debt:
+        cu.priority = "ממתין להנהלה"
+        r.insert(0, "אין חשבון עסקה לגבייה; חשבונית מס פתוחה – לאימות מול הנהלת החשבונות")
+    elif net < min_debt:
+        cu.priority = "לסגירה ב-Hyp"
+        r.insert(0, "אין חוב לגבייה: המסמך הפתוח כבר מכוסה – לסגור ב-Hyp, לא לפנות ללקוח")
+    elif cu.review_with:
+        cu.priority = "ממתין להנהלה"
+        r.insert(0, f"ממתין לתשובת {cu.review_with} – לגבייה {net:,.0f} ₪")
     else:
-        cu.priority = "מעקב"
-    r.insert(0, head)
+        if net >= urgent_amount or (days >= urgent_days and net >= urgent_min):
+            cu.priority = "דחוף"
+        elif days >= followup_days:
+            cu.priority = "לטיפול"
+        else:
+            cu.priority = "מעקב"
+        r.insert(0, f"לגבייה {net:,.0f} ₪" + (f" (נדרש בלוח {cu.demanded:,.0f})" if cu.demanded is not None
+                                               and abs(cu.demanded - net) > 1 else "")
+                 + f", מסמך פתוח ותיק {days} ימים")
+    if cu.priority not in ("דחוף", "לטיפול", "מעקב"):
+        cu.collectible = D0
+    else:
+        cu.collectible = net
 
 
 # ---------------------------------------------------------------- when to contact
@@ -569,7 +666,7 @@ def _schedule(cu: Customer, cfg: dict, as_of: date) -> None:
     """מתי לפנות: מועד שקבעה מנהלת הגבייה גובר; אחרת פנייה אחרונה + מחזור לפי עדיפות; לא פנו מעולם – היום."""
     from datetime import timedelta
     if cu.action != "פנייה ללקוח":
-        cu.when = {"בירור פנימי ב-Hyp": "בירור פנימי – לא לפנות ללקוח לפני שמתברר"}.get(cu.action, "")
+        cu.when = "" if cu.action in ("", "ללא פעולה") else "לא לפנות ללקוח – " + cu.action
         return
     hol = {date.fromisoformat(str(x)) for x in cfg.get("holidays", [])}
     cadence = {"דחוף": 7, "לטיפול": 14, "מעקב": 30}
