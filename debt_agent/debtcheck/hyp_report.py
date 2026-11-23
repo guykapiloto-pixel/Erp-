@@ -61,6 +61,7 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
     tot = lambda attr, cond=lambda c: True: sum((getattr(c, attr) for c in custs if cond(c)), Decimal(0))
     rows = [
         ("תמונת מצב הלוח (מסמכים פתוחים ב-Hyp)", summary["snapshot"]),
+        ("מקור היסטוריה", summary.get("history", "")),
         ("תאריך גיול", _dt(as_of)),
         ("לקוחות בניתוח", summary["customers"]),
         ("מסמכים בהיסטוריה (קובץ Hyp)", summary["docs"]),
@@ -84,21 +85,41 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
             cell.number_format = money
     finish(ws, [48, 28])
 
+    # 1א. רשימת השבוע – למי לפנות ומתי
+    wk = summary.get("week_end")
+    ws = sheet("רשימת השבוע", ["מתי", "עדיפות", "לקוח", "טלפון", "מייל", "איש קשר", "לגבייה (נטו)", "מסמך פתוח ותיק",
+                               "ימים", "תשלום אחרון", "פנייה אחרונה", "הערה אחרונה בלוח", "מס' הנה\"ח", "מה לבקש / סיבה"])
+    week = [c for c in custs if c.contact_on and wk and c.contact_on <= wk]
+    week.sort(key=lambda c: (c.contact_on, {"דחוף": 0, "לטיפול": 1, "מעקב": 2}.get(c.priority, 3), -c.score))
+    for c in week:
+        lp = c.last_payment
+        ws.append([c.when, c.priority, c.name, c.phone, c.email, c.contact, _f(c.net_to_collect), _dt(c.oldest_open),
+                   c.oldest_days, f"{_dt(lp.doc_date)} ({_f(lp.total):,.0f})" if lp else "אין", _dt(c.last_contact),
+                   c.last_note[:200], c.bk, " | ".join(c.reasons)])
+        ws.cell(ws.max_row, 2).fill = PatternFill("solid", fgColor=FILL.get(c.priority, "FFFFFF"))
+    finish(ws, [26, 9, 30, 13, 24, 12, 12, 11, 6, 18, 11, 40, 9, 90], money_cols=(7,))
+    ws.insert_rows(1)
+    ws["A1"] = (f"רשימת פניות לשבוע עד {_dt(wk)} – {len(week)} לקוחות, "
+                f"{sum((c.net_to_collect for c in week), Decimal(0)):,.0f} ₪ לגבייה")
+    ws["A1"].font = Font(bold=True, size=13)
+    ws.freeze_panes = "D3"
+    ws.auto_filter.ref = f"A2:{get_column_letter(ws.max_column)}{ws.max_row}"
+
     # 2. למי לפנות
-    ws = sheet("למי לפנות", ["עדיפות", "פעולה", "לקוח", "ח.פ/ת.ז", "מס' הנה\"ח", "טלפון", "מייל", "איש קשר", "חוב פתוח ב-Hyp",
+    ws = sheet("למי לפנות", ["עדיפות", "פעולה", "מתי", "לקוח", "ח.פ/ת.ז", "מס' הנה\"ח", "טלפון", "מייל", "איש קשר", "חוב פתוח ב-Hyp",
                               "ייתכן ששולם", "שולם אחרי עדכון", "לגבייה (נטו)", "מסמך פתוח ותיק", "ימים", "מס' מסמכים פתוחים",
                               "תשלום אחרון", "סכום תשלום אחרון", "נגבה 12 חודשים", "חיוב אוטומטי", "סיבות"])
     for c in custs:
         if c.priority == "תקין":
             continue
         lp = c.last_payment
-        ws.append([c.priority, c.action, c.name, c.crn, c.bk, c.phone, c.email, c.contact, _f(c.open_debt), _f(c.possibly_paid),
+        ws.append([c.priority, c.action, c.when, c.name, c.crn, c.bk, c.phone, c.email, c.contact, _f(c.open_debt), _f(c.possibly_paid),
                    _f(c.paid_after_snapshot), _f(c.net_to_collect), _dt(c.oldest_open), c.oldest_days,
                    len(c.open_docs), _dt(lp.doc_date) if lp else "", _f(lp.total) if lp else None, _f(c.paid_12m),
                    "כן" if c.auto_charge else "", " | ".join(c.reasons)])
         ws.cell(ws.max_row, 1).fill = PatternFill("solid", fgColor=FILL.get(c.priority, "FFFFFF"))
-    finish(ws, [11, 16, 30, 11, 9, 13, 24, 12, 12, 11, 11, 12, 12, 7, 8, 11, 11, 12, 8, 90],
-           money_cols=(9, 10, 11, 12, 17, 18))
+    finish(ws, [11, 16, 26, 30, 11, 9, 13, 24, 12, 12, 11, 11, 12, 12, 7, 8, 11, 11, 12, 8, 90],
+           money_cols=(10, 11, 12, 13, 18, 19))
 
     # 3. פירוק חוב
     ws = sheet("פירוק חוב", ["לקוח", "ח.פ/ת.ז", "חשבונות עסקה", "חשבוניות מס", "חשבוניות מס קבלה", "קבלות", "זיכויים",
@@ -164,6 +185,8 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
         ws.append(list(r))
     finish(ws, [20, 120])
 
+    wb.move_sheet("רשימת השבוע", offset=-wb.sheetnames.index("רשימת השבוע"))
+    wb.active = 0
     path = Path(path)
     wb.save(path)
     return path

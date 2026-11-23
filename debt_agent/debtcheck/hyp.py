@@ -135,6 +135,17 @@ class Customer:
     last_payment: HypDoc | None = None
     paid_12m: Decimal = D0
     action: str = ""
+    # מעקב פניות (מהלוח)
+    last_contact: date | None = None
+    next_contact: date | None = None
+    last_note: str = ""
+    pay_day: int | None = None
+    pay_freq: str = ""
+    pay_method: str = ""
+    contact_on: date | None = None
+    hidden: bool = False
+    handler: str = ""
+    when: str = ""
     reversals: list = field(default_factory=list)     # (קבלה מקורית | None, קבלה שלילית)
     score: float = 0.0
     priority: str = ""
@@ -193,6 +204,13 @@ def load_hyp_csv(path: str | Path) -> tuple[list[HypDoc], list[Issue]]:
     return docs, issues
 
 
+def _iso(v) -> date | None:
+    try:
+        return date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
+
+
 def _load_json(p: Path) -> dict:
     j = json.loads(p.read_text(encoding="utf-8"))
     return j.get("data", j) if isinstance(j, dict) and "data" in j and isinstance(j["data"], dict) else j
@@ -217,10 +235,18 @@ def load_board(snapshot_dir: str | Path) -> dict:
     return {"as_of": as_of, "as_of_raw": hyp["opendocs"]["asOf"], "open": hyp["open"], "opendocs": hyp["opendocs"],
             "auto": set(map(int, (hyp.get("auto") or {}).get("ids", []))),
             "bk": {int(r[0]): str(r[1]) for r in (hyp.get("bk") or {}).get("rows", []) if r[1]},
-            "customers": custs, "warnings": warnings}
+            "customers": custs, "warnings": warnings, "pay": hyp.get("pay"),
+            "cfile": _load_coll(root / "cfile"), "contacts": list(_load_coll(root / "contacts").values())}
+
+
+def _load_coll(d: Path) -> dict:
+    return {p.stem: _load_json(p) for p in sorted(d.glob("*.json"))} if d.is_dir() else {}
 
 
 # ---------------------------------------------------------------- analysis
+
+ACTIONS = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה ללקוח", "מעקב": "פנייה ללקוח", "לבדיקה": "בירור פנימי ב-Hyp",
+           "חיוב אוטומטי": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
 
 def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None
             ) -> tuple[list[Customer], list[Issue], dict]:
@@ -272,6 +298,46 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
             cu.phone = d.phone
         if not cu.email and d.email:
             cu.email = d.email
+    has_history = bool(docs)
+    # תשלומים מהלוח (hyp/pay) – משלימים את התקופה שאחרי קובץ ה-CSV, או מחליפים אותו כשאין קובץ
+    known = {(d.type, d.num) for d in docs}
+    known_nums = {d.num for d in docs if d.type in (IR, R)}
+    added_pay = 0
+    for h, plist in ((board.get("pay") or {}).get("rows") or []):
+        key = f"h:{int(h)}"
+        if key not in custs:
+            continue
+        cu = custs[key]
+        for p in plist:
+            num = str(p[2])
+            if num in known_nums:
+                continue
+            typ = R if num.startswith("8") else IR
+            dd = date.fromisoformat(p[0])
+            cu.docs.append(HypDoc(num, typ, dd, dd, cu.name, cu.crn, Decimal(str(p[1])), D0, D0, "board", ""))
+            added_pay += 1
+
+    # מעקב פניות של מנהלת הגבייה (כרטיס לקוח + יומן פניות בלוח)
+    for k, f in (board.get("cfile") or {}).items():
+        h = f.get("hypId")
+        cu = custs.get(f"h:{int(h)}") if h else None
+        if not cu:
+            continue
+        cu.next_contact = _iso(f.get("nextContact"))
+        cu.last_contact = _iso(f.get("lastContact"))
+        cu.last_note = norm_text(f.get("lastNote"))
+        cu.pay_day = int(f["payDay"]) if str(f.get("payDay") or "").isdigit() else None
+        cu.pay_freq = norm_text(f.get("payFreq"))
+        cu.pay_method = norm_text(f.get("payMethod"))
+        cu.hidden = bool(f.get("hideOpen"))
+        cu.handler = norm_text(f.get("owner") or f.get("partner") or "")
+    for c in board.get("contacts") or []:
+        h = c.get("hypId")
+        cu = custs.get(f"h:{int(h)}") if h else None
+        dd = _iso(c.get("date"))
+        if cu and dd and (cu.last_contact is None or dd > cu.last_contact):
+            cu.last_contact = dd
+
     for key, n in unresolved.items():
         cu = custs[key]
         issues.append(Issue("warning", "NOT_IN_BOARD", f"{n} מסמכים של לקוח שלא נמצא ברשימת הלקוחות בלוח "
@@ -319,10 +385,10 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
                          Decimal(str(x[7])) if len(x) > 7 and x[7] not in (None, "") else D0,
                          x[6] if len(x) > 6 else "", url)
             cu.open_docs.append(od)
-            if src is None:
+            if src is None and has_history:
                 issues.append(Issue("error", "OPEN_NOT_IN_CSV", f"מסמך פתוח {typ} {num} לא קיים בקובץ Hyp",
                                     cu.name, num))
-            elif abs(src.total - od.total) > Decimal("0.5"):
+            elif src is not None and abs(src.total - od.total) > Decimal("0.5"):
                 issues.append(Issue("error", "OPEN_AMOUNT_DIFF", f"{typ} {num}: סכום בלוח {od.total:,.2f} "
                                     f"ובקובץ {src.total:,.2f}", cu.name, num))
     if orphan:
@@ -335,15 +401,16 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
     out = []
     for cu in custs.values():
         _compute(cu, as_of, snap)
+        if not has_history:
+            cu.formula, cu.gap = cu.open_debt, D0      # אין היסטוריה מלאה – בקרת הנוסחה לא רלוונטית
         _classify(cu, a, gap_tol, as_of)
+        cu.action = ACTIONS.get(cu.priority, "")
+        _schedule(cu, cfg, as_of)
         if cu.docs or cu.open_docs:
             out.append(cu)
 
+    _spread(out, cfg, as_of)
     order = {"דחוף": 0, "לטיפול": 1, "לבדיקה": 2, "מעקב": 3, "חיוב אוטומטי": 4, "מוחרג": 5, "תקין": 6}
-    acts = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה ללקוח", "מעקב": "פנייה ללקוח", "לבדיקה": "בירור פנימי ב-Hyp",
-            "חיוב אוטומטי": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
-    for c in out:
-        c.action = acts.get(c.priority, "")
     out.sort(key=lambda c: (order.get(c.priority, 9), -c.score, -c.open_debt))
 
     board_total = Decimal(str(board["open"].get("total", 0)))
@@ -352,7 +419,9 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
         issues.append(Issue("error", "BOARD_TOTAL_DIFF", f"סך החוב הפתוח שחושב {calc_total:,.2f} שונה מהסה\"כ בלוח "
                                                          f"{board_total:,.2f}"))
     summary = {"snapshot": board["as_of_raw"], "as_of": as_of, "board_total": board_total, "open_total": calc_total,
-               "customers": len(out), "docs": len(docs)}
+               "customers": len(out), "docs": len(docs), "board_payments_added": added_pay,
+               "history": "קובץ Hyp מלא" if has_history else "הלוח בלבד (ללא בקרת נוסחה)",
+               "week_end": week_end(as_of)}
     return out, issues, summary
 
 
@@ -428,9 +497,9 @@ def _classify(cu, a, gap_tol, as_of):
     for orig, neg in cu.reversals:
         r.append(f"קבלה שלילית {neg.num} ({neg.total:,.0f}) {neg.doc_date:%d/%m/%Y}"
                  + (f" מבטלת קבלה {orig.num} – החזר/שיק חוזר" if orig else " ללא קבלה מקורית תואמת"))
-    if cu.excluded:
+    if cu.excluded or cu.hidden:
         cu.priority = "מוחרג"
-        r.insert(0, "מוחרג לפי הגדרה")
+        r.insert(0, "מוחרג לפי הגדרה" if cu.excluded else "הוסתר מרשימת החוב הפתוח בלוח")
         return
     if cu.open_debt < min_debt:
         cu.priority = "תקין"          # אין חוב ב-Hyp; פער מול הנוסחה (אם יש) מופיע בגיליון בקרת הפערים
@@ -475,3 +544,89 @@ def _classify(cu, a, gap_tol, as_of):
     else:
         cu.priority = "מעקב"
     r.insert(0, head)
+
+
+# ---------------------------------------------------------------- when to contact
+
+def is_workday(d: date, holidays: set) -> bool:
+    return d.weekday() not in (4, 5) and d not in holidays          # שישי=4, שבת=5
+
+
+def next_workday(d: date, holidays: set) -> date:
+    from datetime import timedelta
+    while not is_workday(d, holidays):
+        d += timedelta(days=1)
+    return d
+
+
+def week_end(d: date) -> date:
+    """יום חמישי של השבוע (שבוע עבודה א'–ה')."""
+    from datetime import timedelta
+    return d + timedelta(days=(3 - d.weekday()) % 7)
+
+
+def _schedule(cu: Customer, cfg: dict, as_of: date) -> None:
+    """מתי לפנות: מועד שקבעה מנהלת הגבייה גובר; אחרת פנייה אחרונה + מחזור לפי עדיפות; לא פנו מעולם – היום."""
+    from datetime import timedelta
+    if cu.action != "פנייה ללקוח":
+        cu.when = {"בירור פנימי ב-Hyp": "בירור פנימי – לא לפנות ללקוח לפני שמתברר"}.get(cu.action, "")
+        return
+    hol = {date.fromisoformat(str(x)) for x in cfg.get("holidays", [])}
+    cadence = {"דחוף": 7, "לטיפול": 14, "מעקב": 30}
+    cadence.update(cfg.get("contact_cadence_days") or {})
+    today = next_workday(as_of, hol)
+    if cu.next_contact:
+        due, src = cu.next_contact, "מועד שנקבע בלוח"
+    elif cu.last_contact:
+        due, src = cu.last_contact + timedelta(days=int(cadence.get(cu.priority, 14))), \
+            f"פנייה אחרונה {cu.last_contact:%d/%m} + {cadence.get(cu.priority, 14)} ימים"
+    else:
+        due, src = today, "לא תועדה פנייה"
+    if cu.pay_day and cu.pay_freq and not cu.next_contact:
+        # לקוח שמשלם בתאריך קבוע: לא לפנות לפני יום התשלום הקרוב + 2
+        pd_ = date(as_of.year, as_of.month, min(cu.pay_day, 28))
+        if pd_ >= as_of:
+            due = max(due, pd_ + timedelta(days=2))
+            src += f"; משלם ב-{cu.pay_day} לחודש"
+    due = next_workday(max(due, today) if due < today else due, hol)
+    cu.contact_on = due
+    late = (as_of - cu.next_contact).days if cu.next_contact and cu.next_contact < as_of else 0
+    cu.when = ("היום" if due <= today else f"{due:%d/%m/%Y}") + f" ({src}" + (f", באיחור {late} ימים" if late else "") + ")"
+
+
+def _spread(custs: list, cfg: dict, as_of: date) -> None:
+    """פיזור הפניות לפי קיבולת שבועית: מועדים שקבעה מנהלת הגבייה נשמרים; השאר מתמלאים לפי עדיפות וציון,
+    יום אחר יום, והעודף עובר לשבוע הבא."""
+    import math
+    from datetime import timedelta
+    cap = int(cfg.get("weekly_capacity", 60))
+    hol = {date.fromisoformat(str(x)) for x in cfg.get("holidays", [])}
+    wk = week_end(as_of)
+    days, d = [], next_workday(as_of, hol)
+    while d <= wk:
+        days.append(d)
+        d = next_workday(d + timedelta(days=1), hol)
+    if not days:
+        return
+    due = [c for c in custs if c.contact_on and c.contact_on <= wk]
+    fixed = [c for c in due if c.next_contact and c.next_contact >= as_of]
+    flex = [c for c in due if c not in fixed]
+    rank = {"דחוף": 0, "לטיפול": 1, "מעקב": 2}
+    flex.sort(key=lambda c: (c.contact_on, rank.get(c.priority, 3), -c.score))
+    flex.sort(key=lambda c: (rank.get(c.priority, 3), -c.score))
+    per_day = max(1, math.ceil(cap / len(days)))
+    load = {d: sum(1 for c in fixed if c.contact_on == d) for d in days}
+    nxt = next_workday(wk + timedelta(days=1), hol)
+    for c in flex:
+        slot = next((d for d in days if d >= c.contact_on and load[d] < per_day), None) \
+            if c.contact_on >= days[0] else next((d for d in days if load[d] < per_day), None)
+        if slot is None:
+            c.contact_on = nxt
+            c.when = f"{nxt:%d/%m/%Y} (חריגה מקיבולת השבוע – {cap} פניות)" + c.when[c.when.find(" ("):] \
+                if " (" in c.when else f"{nxt:%d/%m/%Y}"
+            continue
+        load[slot] += 1
+        if slot != c.contact_on:
+            label = "היום" if slot == days[0] else f"{slot:%d/%m/%Y}"
+            c.when = label + c.when[c.when.find(" ("):] if " (" in c.when else label
+        c.contact_on = slot

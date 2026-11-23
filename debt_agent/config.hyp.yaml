@@ -1,0 +1,20 @@
+# הגדרות ריצה שבועית – ניתוח גבייה (Hyp + לוח הגבייה). ללא נתוני לקוחות.
+columns: {}
+doc_types: {}
+alerts:
+  min_debt: 1
+  urgent_amount: 10000          # חוב חריג: נטו לגבייה מעל סכום זה => דחוף
+  urgent_min_amount: 5000       # דחוף לפי ותק (90+ ימים) רק מעל סכום זה
+  urgent_days: 90
+  followup_days: 30
+  auto_charge_grace_days: 45
+  recent_payment_days: 60
+  no_payment_days: 120
+  formula_gap_tolerance: 100
+# מחזור פנייה חוזרת (ימים) כשלא נקבע מועד בלוח
+contact_cadence_days: {דחוף: 7, לטיפול: 14, מעקב: 30}
+weekly_capacity: 60             # מספר פניות בשבוע למנהלת הגבייה
+holidays: []                    # תאריכים (YYYY-MM-DD) שאינם ימי עבודה
+# מוחרגים מרשימת הפנייה (מזהה לקוח ב-Hyp) – לפי החלטת הנהלה
+exclude_hyp_ids:
+  - 2459006                     # צד קשור

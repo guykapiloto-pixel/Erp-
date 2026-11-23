@@ -67,7 +67,7 @@ def _customer_detail(b) -> str:
 
 def _run_hyp(a, cfg) -> int:
     from . import hyp, hyp_report
-    docs, issues = hyp.load_hyp_csv(a.csv)
+    docs, issues = hyp.load_hyp_csv(a.csv) if a.csv else ([], [])
     board = hyp.load_board(a.board)
     custs, more, summary = hyp.analyze(docs, board, cfg, a.as_of)
     issues += more
@@ -110,7 +110,7 @@ def main(argv=None) -> int:
     r.add_argument("--customer")
     h = sub.add_parser("hyp", help="ניתוח גבייה: היסטוריית מסמכי Hyp + מסמכים פתוחים מהלוח")
     h.add_argument("--config", required=True)
-    h.add_argument("--csv", required=True, help="דוח מסמכים מ-Hyp (report.csv)")
+    h.add_argument("--csv", help="דוח מסמכים מ-Hyp (report.csv). בלעדיו – הלוח בלבד, ללא בקרת הנוסחה")
     h.add_argument("--board", required=True, help="תיקיית תמונת מצב של הלוח (hyp/*.json, custList/*.json)")
     h.add_argument("--out", default="collections_report.xlsx")
     h.add_argument("--as-of", type=date.fromisoformat)

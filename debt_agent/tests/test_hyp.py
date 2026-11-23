@@ -57,6 +57,8 @@ def setup(tmp_path):
     b = tmp_path / "board"
     (b / "hyp").mkdir(parents=True)
     (b / "custList").mkdir()
+    (b / "cfile").mkdir()
+    (b / "contacts").mkdir()
     snap = "2026-11-19T14:00:00+02:00"
     custs = [{"h": 1, "n": "אלפא בע\"מ", "crn": "511111111", "ph": "03-1"}, {"h": 2, "n": "בטא", "crn": "22222222"},
              {"h": 3, "n": "גמא", "crn": "33333333"}, {"h": 4, "n": "אפסילון", "crn": "55555555"}]
@@ -73,6 +75,9 @@ def setup(tmp_path):
         "hyp/auto.json": {"asOf": snap, "ids": [2]},
         "hyp/bk.json": {"asOf": snap, "rows": [[1, "30001"]]},
         "custList/meta.json": {"chunks": 1, "count": 4},
+        "cfile/h1.json": {"hypId": 1, "nextContact": "2026-11-25", "lastContact": "2026-11-18", "lastNote": "הבטיח לשלם"},
+        "contacts/h1_2026-11-20_x.json": {"hypId": 1, "date": "2026-11-20", "channel": "טלפון"},
+        "hyp/pay.json": {"asOf": snap, "rows": [[3, [["2026-09-01", 2360, 4004]]], [4, [["2026-11-18", 700, 4010]]]]},
         "custList/c0.json": {"rows": custs},
     }
     for k, v in files.items():
@@ -83,18 +88,18 @@ def setup(tmp_path):
     docs, issues = hyp.load_hyp_csv(p)
     board = hyp.load_board(b)
     custs_, more, summary = hyp.analyze(docs, board, cfg, date(2026, 11, 23))
-    return {c.name: c for c in custs_}, issues + more, summary, docs
+    return {c.name: c for c in custs_}, issues + more, summary, docs, board, cfg
 
 
 def test_loads_all_rows_including_quoted_negative(setup):
-    _, issues, _, docs = setup
+    _, issues, _, docs = setup[:4]
     assert len(docs) == len(DOCS)
     assert not [i for i in issues if i.code == "BAD_ROW"]
     assert [d.total for d in docs if d.num == "8002"] == [D("-500")]
 
 
 def test_totals_reconcile(setup):
-    c, issues, s, _ = setup
+    c, issues, s = setup[:3]
     assert s["open_total"] == D(15360) == s["board_total"]
     assert not [i for i in issues if i.code == "BOARD_TOTAL_DIFF"]
 
@@ -122,7 +127,7 @@ def test_gamma_possibly_paid_and_reversal(setup):
 
 
 def test_orphan_open_doc_attributed_by_document(setup):
-    c, issues, _, _ = setup
+    c, issues = setup[:2]
     d = c["דלתא"]
     assert d.open_debt == D(3000) and d.hyp_id is None and d.priority == "לטיפול"
     assert c["גמא"].open_debt == D(2360)    # לא קיבל את המסמך של דלתא למרות השם בלוח
@@ -132,16 +137,68 @@ def test_orphan_open_doc_attributed_by_document(setup):
 
 def test_payment_after_snapshot(setup):
     e = setup[0]["אפסילון"]
-    assert e.formula == D(4000)              # התשלום מ-21/11 אחרי תמונת הלוח – לא בנוסחה
+    # 4010 (700) קיים רק בלוח ונכנס להיסטוריה; 4006 מ-21/11 אחרי תמונת הלוח – לא בנוסחה
+    assert e.formula == D(3300)
     assert e.paid_after_snapshot == D(1500) and e.net_to_collect == D(2500) and e.priority == "לבדיקה"
 
 
 def test_report_writes(setup, tmp_path):
     import openpyxl
     from debtcheck import hyp_report
-    c, issues, s, _ = setup
+    c, issues, s = setup[:3]
     out = hyp_report.write(tmp_path / "r.xlsx", list(c.values()), issues, s)
     wb = openpyxl.load_workbook(out)
-    assert wb.sheetnames == ["סיכום", "למי לפנות", "פירוק חוב", "בקרת פערים", "מסמכים פתוחים", "בעיות נתונים", "שיטה"]
-    names = [r[2] for r in wb["למי לפנות"].iter_rows(min_row=2, values_only=True)]
+    assert wb.sheetnames == ["רשימת השבוע", "סיכום", "למי לפנות", "פירוק חוב", "בקרת פערים", "מסמכים פתוחים",
+                             "בעיות נתונים", "שיטה"]
+    names = [r[3] for r in wb["למי לפנות"].iter_rows(min_row=2, values_only=True)]
     assert names[0] == 'אלפא בע"מ'
+    week = [r[2] for r in wb["רשימת השבוע"].iter_rows(min_row=3, values_only=True)]
+    assert week == ["דלתא", 'אלפא בע"מ']      # דלתא – היום (לא תועדה פנייה), אלפא – 25/11 כפי שנקבע בלוח
+
+
+def test_when_to_contact(setup):
+    c = setup[0]
+    a, d = c['אלפא בע"מ'], c["דלתא"]
+    assert a.last_contact == date(2026, 11, 20) and a.next_contact == date(2026, 11, 25)
+    assert a.contact_on == date(2026, 11, 25) and a.when.startswith("25/11/2026 (מועד שנקבע בלוח")
+    assert d.contact_on == date(2026, 11, 23) and d.when.startswith("היום (לא תועדה פנייה")
+    assert c["גמא"].contact_on is None and "בירור פנימי" in c["גמא"].when
+    assert hyp.week_end(date(2026, 11, 23)) == date(2026, 11, 26)
+    assert hyp.next_workday(date(2026, 11, 27), set()) == date(2026, 11, 29)   # שישי → ראשון
+
+
+def test_cadence_from_last_contact():
+    cu = hyp.Customer("h:9", 9, "x", priority="דחוף", action="פנייה ללקוח", last_contact=date(2026, 11, 10))
+    hyp._schedule(cu, {}, date(2026, 11, 23))
+    assert cu.contact_on == date(2026, 11, 23)          # 10/11 + 7 = 17/11 כבר עבר → היום
+    cu = hyp.Customer("h:9", 9, "x", priority="לטיפול", action="פנייה ללקוח", last_contact=date(2026, 11, 19))
+    hyp._schedule(cu, {}, date(2026, 11, 23))
+    assert cu.contact_on == date(2026, 12, 3)           # 19/11 + 14 = 3/12 (חמישי)
+
+
+def test_board_only_mode(setup):
+    """בלי קובץ Hyp: החוב והתשלומים מהלוח בלבד; התשלום 4004 מהלוח מזהה את המסמך של גמא כ"ייתכן ששולם"."""
+    custs, issues, summary = hyp.analyze([], setup[4], setup[5], date(2026, 11, 23))
+    c = {x.name: x for x in custs}
+    assert summary["open_total"] == D(15360)
+    assert c["גמא"].possibly_paid == D(2360) and c["גמא"].gap == 0
+    assert c["אפסילון"].last_payment.num == "4010"
+
+
+def test_capacity_spread():
+    """קיבולת 4 בשבוע של 4 ימי עבודה (ב'-ה') → לקוח אחד ליום, לפי ציון; מועד שנקבע בלוח נשמר; העודף לשבוע הבא."""
+    as_of = date(2026, 11, 23)
+    cs = []
+    for i in range(6):
+        c = hyp.Customer(f"h:{i}", i, f"c{i}", priority="דחוף", action="פנייה ללקוח", score=100 - i)
+        c.contact_on, c.when = as_of, "היום (לא תועדה פנייה)"
+        cs.append(c)
+    fixed = hyp.Customer("h:9", 9, "fixed", priority="מעקב", action="פנייה ללקוח", score=1,
+                         next_contact=date(2026, 11, 24))
+    fixed.contact_on, fixed.when = date(2026, 11, 24), "24/11/2026 (מועד שנקבע בלוח)"
+    hyp._spread(cs + [fixed], {"weekly_capacity": 4}, as_of)
+    got = {c.name: c.contact_on for c in cs + [fixed]}
+    assert got["fixed"] == date(2026, 11, 24)
+    assert got["c0"] == date(2026, 11, 23) and got["c1"] == date(2026, 11, 25) and got["c2"] == date(2026, 11, 26)
+    assert got["c3"] == got["c4"] == got["c5"] == date(2026, 11, 29)     # ראשון הבא
+    assert "חריגה מקיבולת" in cs[5].when
