@@ -279,9 +279,38 @@ def test_annual_account_prorated_minus_payments(setup):
     items = {(hyp.T, "1010"): {"title": "", "items": [{"desc": "הנהלת חשבונות 01-12/26", "sku": "101", "amount": "1694.92"}]},
              (hyp.T, "1004"): {"title": "", "items": [{"desc": "הנהלת חשבונות 11/26", "sku": "101", "amount": "847.46"}]}}
     board = dict(board, failed=[])
-    c = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}
+    c = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items, {})[0]}
     t = c["טת"]
     assert t.not_due == D("333.33") and t.net_to_collect == D("1666.67")       # 2,000 × 10/12, לא שולם דבר
     assert t.priority == "מעקב" and any("בפיגור" in r for r in t.reasons)     # המסמך בן 22 ימים
     b = c["בטא"]                                                                # נובמבר טרם נספר → אין חוב
     assert b.net_to_collect == 0 and b.priority in ("חיוב קבוע", "טרם מגיע")
+
+
+def test_payments_count_only_against_open_accounts_of_the_same_year(tmp_path):
+    """מקרה מקס מגיד: חשבון עסקה שנתי פתוח ל-2026 (12 × 500), 11 תשלומים חודשיים ב-2026 שלא שויכו → אין חוב.
+    חשבונות עסקה סגורים (כפיל מאותו יום, וחשבון 2025) אינם בחישוב ואינם "בולעים" את התשלומים של 2026."""
+    T_, IR_ = hyp.T, hyp.IR
+    def doc(num, typ, d, total):
+        dd = date.fromisoformat(d)
+        return hyp.HypDoc(num, typ, dd, dd, "מקס", "5109", D(total), D0, D0, "UI", "")
+    D0 = D(0)
+    docs = [doc("91", T_, "2025-03-17", 7000), doc("92", T_, "2026-02-17", 6000), doc("93", T_, "2026-02-17", 6000)]
+    docs += [doc(f"25{m:02d}", IR_, f"2025-{m:02d}-15", 500) for m in range(4, 13)]          # תשלומי 2025
+    docs += [doc(f"26{m:02d}", IR_, f"2026-{m:02d}-15", 500) for m in range(1, 12)]          # 11 תשלומים ב-2026
+    docs += [doc("2700", IR_, "2026-06-20", 900)]                                             # שויך לחשבון עסקה אחר
+    board = {"as_of": date(2026, 11, 23), "as_of_raw": "2026-11-23", "auto": set(), "bk": {}, "warnings": [],
+             "customers": [{"h": 7, "n": "מקס", "crn": "5109"}],
+             "open": {"total": 6000, "rows": [[7, "מקס", 6000]]},
+             "opendocs": {"base": "", "rows": [[7, [["2026-02-17", 93, 300, 6000, 6000, "", "", 5084.75, 915.25]]]]}}
+    items = {(T_, "93"): {"title": "", "items": [{"desc": "הנהלת חשבונות 26", "sku": "101", "amount": "5084.75"}]}}
+    pay = {(IR_, "2700"): {"title": "חשבונית מס קבלה עבור חשבונית עסקה מספר 88", "items": []}}
+    cfg = {"alerts": {}, "prorate_future_periods": True}
+    (c,), _, _ = hyp.analyze(docs, board, cfg, date(2026, 11, 23), items, pay)
+    assert c.ledger[2026] == (D(5500), D(5500), D(0))            # הגיע 6,000×11/12; שולם 11×500; ה-900 המשויך לא נספר
+    assert c.net_to_collect == 0 and c.not_due == D(500) and c.double_counted == D(5500)
+    assert c.priority == "טרם מגיע" and c.contact_on is None
+    # אותו לקוח עם 8 תשלומים בלבד ב-2026 → חוב של 3 חודשים
+    (c2,), _, _ = hyp.analyze([d for d in docs if d.num not in ("2609", "2610", "2611")], board, cfg,
+                              date(2026, 11, 23), items, pay)
+    assert c2.net_to_collect == D(1500)

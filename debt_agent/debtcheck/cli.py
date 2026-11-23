@@ -82,7 +82,18 @@ def _run_hyp(a, cfg) -> int:
         doc_items, errs = docitems.load_items(want, a.pdf_cache)
         for typ, num, err in errs:
             issues.append(hyp.Issue("warning", "DOC_NOT_READ", f"העתק המסמך לא נקרא ({err}) – לא סווג", "", f"{typ} {num}"))
-    custs, more, summary = hyp.analyze(docs, board, cfg, a.as_of, doc_items)
+    pay_items = None
+    if a.pay_cache and docs:
+        from . import docitems
+        base = board["opendocs"].get("base", "")
+        acct = next((str(x[5]).split("/")[0] for _h, rows in board["opendocs"]["rows"] for x in rows
+                     if len(x) > 5 and x[5] and not str(x[5]).startswith("http")), "")
+        want = [(d.type, d.num, docitems.doc_url(base, acct, d.type, d.issued.year, d.uuid))
+                for d in docs if d.type != hyp.T and d.uuid]
+        pay_items, errs = docitems.load_items(want, a.pay_cache, workers=24, keep_pdf=False)
+        for typ, num, err in errs:
+            issues.append(hyp.Issue("warning", "DOC_NOT_READ", f"מסמך התשלום לא נקרא ({err})", "", f"{typ} {num}"))
+    custs, more, summary = hyp.analyze(docs, board, cfg, a.as_of, doc_items, pay_items)
     issues += more
     if a.board_json:
         from . import board_export
@@ -132,6 +143,7 @@ def main(argv=None) -> int:
     h.add_argument("--board", required=True, help="תיקיית תמונת מצב של הלוח (hyp/*.json, custList/*.json)")
     h.add_argument("--out", default="collections_report.xlsx")
     h.add_argument("--pdf-cache", help="תיקיית מטמון להעתקי המסמכים הפתוחים (קריאת שורות הפירוט מהמסמכים עצמם)")
+    h.add_argument("--pay-cache", help="תיקיית מטמון למסמכי התשלום (קריאת השיוך \"עבור חשבונית עסקה מספר\")")
     h.add_argument("--board-json", help="תיקייה לכתיבת תוצאות הסוכן בפורמט של הלוח (agent/meta, agent/r*)")
     h.add_argument("--as-of", type=date.fromisoformat)
     h.add_argument("--customer")

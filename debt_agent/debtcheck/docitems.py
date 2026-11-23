@@ -77,15 +77,34 @@ def parse_pdf_text(text: str) -> dict:
     return {"items": items, "note": " ".join(note), "title": title}
 
 
-def _fetch_one(url: str, pdf: Path) -> str:
+def _fetch_one(url: str, pdf: Path, keep: bool = True) -> str:
     if not pdf.exists() or pdf.stat().st_size < 500:
         req = urllib.request.Request(url, headers={"User-Agent": "debtcheck"})
         with urllib.request.urlopen(req, timeout=40) as r:
             pdf.write_bytes(r.read())
-    return subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True, timeout=60).stdout
+    out = subprocess.run(["pdftotext", "-layout", str(pdf), "-"], capture_output=True, text=True, timeout=60).stdout
+    if not keep:
+        pdf.unlink(missing_ok=True)
+    return out
 
 
-def load_items(open_docs: list[tuple[str, str, str]], cache_dir: str | Path, workers: int = 12) -> tuple[dict, list]:
+FOLDER = {"חשבונית עסקה": "Proforma%20Invoice", "חשבונית מס קבלה": "Tax%20Invoice%20Receipt", "חשבונית מס": "Tax%20Invoice",
+          "קבלה": "Receipt", "חשבונית זיכוי": "Credit%20Invoice"}
+_LINK = re.compile(r"עבור\s+(חשבונית עסקה|קבלה|חשבונית מס קבלה|חשבונית מס)\s+מספר\s*(\d+)")
+
+
+def doc_url(base: str, account: str, doc_type: str, issued_year: int, doc_uuid: str) -> str:
+    """URL of the PDF copy of any Hyp document (the same scheme the board stores for open documents)."""
+    return f"{base}{account}/{issued_year}/{FOLDER[doc_type]}/{doc_uuid}_copy"
+
+
+def links_of(parsed: dict) -> list:
+    """[(document type, number)] that this document says it was issued for ("עבור חשבונית עסקה מספר N")."""
+    return [(m.group(1), m.group(2)) for m in _LINK.finditer(parsed.get("title") or "")]
+
+
+def load_items(open_docs: list[tuple[str, str, str]], cache_dir: str | Path, workers: int = 12,
+               keep_pdf: bool = True) -> tuple[dict, list]:
     """open_docs: [(type, number, url)]. Returns ({(type, number): parsed}, [(type, number, error)])."""
     cache = Path(cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
@@ -100,7 +119,7 @@ def load_items(open_docs: list[tuple[str, str, str]], cache_dir: str | Path, wor
     def work(t):
         k, url = t
         try:
-            return k, parse_pdf_text(_fetch_one(url, cache / (re.sub(r"\W", "_", k) + ".pdf"))), None
+            return k, parse_pdf_text(_fetch_one(url, cache / (re.sub(r"\W", "_", k) + ".pdf"), keep_pdf)), None
         except Exception as e:  # noqa: BLE001 – כל כשל הורדה/פענוח מדווח ואינו עוצר את הריצה
             return k, None, f"{type(e).__name__}: {e}"
 

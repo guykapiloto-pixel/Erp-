@@ -78,6 +78,7 @@ class HypDoc:
     phone: str = ""
     means: dict = field(default_factory=dict)
     line: int = 0
+    uuid: str = ""
 
 
 @dataclass
@@ -158,6 +159,8 @@ class Customer:
     tags: list = field(default_factory=list)          # רשימות חריגים בלוח
     failed_charge: date | None = None     # חיוב אוטומטי שנכשל וטרם טופל
     cheques_pending: Decimal = D0         # שיקים דחויים שבידינו
+    payments: list = field(default_factory=list)      # תשלומים על החשבון: [(תאריך, סכום, תיאור)]
+    ledger: dict = field(default_factory=dict)        # שנה -> (הגיע, שולם, חוב)
     accrual_based: bool = False           # החוב חושב לפי פירוט המסמכים (חלק יחסי לפי חודשים) בניכוי תשלומים
     not_due: Decimal = D0                 # שכ"ט שהופק בחשבון עסקה אך טרם מגיע (דוח/מאזן שטרם הוגש, חודשים עתידיים)
     fb_verdict: str = ""                  # משוב על הסוכן מהלוח: ok / wrong
@@ -222,7 +225,7 @@ def load_hyp_csv(path: str | Path) -> tuple[list[HypDoc], list[Issue]]:
             issues.append(Issue("warning", "MEANS_MISMATCH", "סכום אמצעי התשלום שונה מהסה\"כ", r["שם לקוח"], ref))
         docs.append(HypDoc(k[1], typ, issued, ddate, norm_text(r["שם לקוח"]), _crn(r["ת.ז/ ח.פ של הלקוח"]), total, bv,
                            vat, norm_text(r.get("נוצר על ידי")), norm_text(r.get("הערה למסמך")),
-                           norm_text(r.get("אימייל לקוח")), norm_text(r.get("טלפון לקוח")), means, i))
+                           norm_text(r.get("אימייל לקוח")), norm_text(r.get("טלפון לקוח")), means, i, norm_text(r.get("doc_uuid"))))
     return docs, issues
 
 
@@ -276,8 +279,8 @@ ACTIONS = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה לל
            "חיוב קבוע": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
 ORDER = ["דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "טרם מגיע", "לסגירה ב-Hyp", "חיוב קבוע", "נבדק – תקין", "מוחרג", "תקין"]
 
-def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None, doc_items: dict | None = None
-            ) -> tuple[list[Customer], list[Issue], dict]:
+def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None, doc_items: dict | None = None,
+            pay_items: dict | None = None) -> tuple[list[Customer], list[Issue], dict]:
     """doc_items: {(type, number): {"items": [...], "title": str}} from docitems.load_items – the documents themselves."""
     a = cfg.get("alerts", {})
     gap_tol = Decimal(str(a.get("formula_gap_tolerance", 100)))
@@ -519,7 +522,7 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
     for cu in custs.values():
         cu.has_history = has_history
         cu.tax_is_debt = bool(cfg.get("tax_invoice_open_is_debt", False))
-        _compute(cu, as_of, snap)
+        _compute(cu, as_of, snap, pay_items if doc_items is not None else None)
         if not has_history:
             cu.formula, cu.gap = cu.open_debt, D0      # אין היסטוריה מלאה – בקרת הנוסחה לא רלוונטית
         _classify(cu, a, gap_tol, as_of)
@@ -567,7 +570,44 @@ def _classify_doc(o: OpenDoc, parsed: dict | None, as_of: date, filed_years: set
             o.unknown += amt
 
 
-def _compute(cu: Customer, as_of: date, snap: date) -> None:
+def _unlinked_payments(cu: Customer, pay_items: dict) -> list:
+    """התשלומים שהלקוח ביצע "על החשבון": [(תאריך, סכום, תיאור)].
+
+    שיטת העבודה: חשבון עסקה אחד לשנה, ובכל תשלום מופקת חשבונית מס קבלה / חשבונית מס נפרדת שאינה משויכת אליו.
+    תשלום שהופק "עבור חשבונית עסקה מספר N" אינו נכלל: הוא כבר סגר (או הקטין) את חשבון העסקה ההוא ב-Hyp.
+    """
+    from .docitems import links_of
+    alld = cu.docs + cu.later_docs
+    link = {(d.type, d.num): links_of(pay_items.get((d.type, d.num)) or {}) for d in alld if d.type != T}
+
+    def to_proforma(typ, num, depth=0):
+        for lt, ln in link.get((typ, num), []):
+            if lt == T or (depth < 3 and to_proforma(lt, ln, depth + 1)):
+                return True
+        return False
+
+    invoiced_receipts = {ln for d in alld if d.type == I for lt, ln in link.get((d.type, d.num), []) if lt == R}
+    cancelled = {id(x) for pair in cu.reversals for x in pair if x is not None}
+    out = []
+    for d in alld:
+        if d.type not in (IR, I, R, C) or to_proforma(d.type, d.num):
+            continue
+        items = (pay_items.get((d.type, d.num)) or {}).get("items") or []
+        what = "; ".join(i["desc"] for i in items if i.get("desc"))[:60]
+        if d.type in (IR, I):
+            out.append((d.doc_date, d.total, f"{d.type} {d.num}" + (f" ({what})" if what else "")))
+        elif d.type == R:
+            # קבלה נספרת רק אם לא הופקה בגינה חשבונית מס (אחרת התשלום היה נספר פעמיים) ולא בוטלה
+            if d.total > 0 and d.num not in invoiced_receipts and id(d) not in cancelled:
+                out.append((d.doc_date, d.total, f"קבלה {d.num}"))
+        else:
+            # זיכוי מבטל חשבונית: יורד מהתשלומים של שנת החשבונית שבוטלה
+            ref = next((x for lt, ln in link.get((d.type, d.num), []) for x in alld if x.type == lt and x.num == ln), None)
+            out.append(((ref or d).doc_date, -d.total, f"זיכוי {d.num}"))
+    return sorted(out)
+
+
+def _compute(cu: Customer, as_of: date, snap: date, pay_items: dict | None = None) -> None:
     for d in cu.docs:
         cu.sums[d.type] += d.total
     s = cu.sums
@@ -608,24 +648,43 @@ def _compute(cu: Customer, as_of: date, snap: date) -> None:
             o.possibly_paid_by = p
             cu.possibly_paid += o.remaining
     cu.paid_after_snapshot = sum((p.total for p in pays if p.issued > snap and id(p) not in used), D0)
-    if cu.has_history:
-        # מניעת ספירה כפולה: חשבון עסקה שנשאר פתוח ב-Hyp למרות שכבר הופקה בגינו חשבונית מס / חשבונית מס קבלה
-        # שלא שויכה אליו. החוב = min(חשבונות עסקה פתוחים, הנוסחה ברמת הלקוח): עסקה − מס − מס קבלה + זיכוי.
-        # חשבונית מס מופקת עם קבלת התשלום (בסיס מזומן), ולכן חשבונית מס שפתוחה ב-Hyp אינה חוב לגבייה אלא
-        # פריט לאימות – אלא אם הוגדר tax_invoice_open_is_debt.
+    cu.accrual_based = cu.has_history and pay_items is not None and any(o.lines for o in cu.open_docs)
+    if cu.accrual_based:
+        # מסתכלים רק על חשבונות העסקה שפתוחים היום. לכל שנה: מה שהגיע (חלק יחסי; דוח/מאזן רק אם הוגש)
+        # פחות התשלומים שהלקוח ביצע באותה שנה ולא שויכו לחשבון עסקה אחר. חשבון עסקה סגור אינו בחישוב.
+        due_y: dict = defaultdict(lambda: D0)
+        for o in cu.open_docs:
+            if o.type != T:
+                continue
+            for ic, amt, due in o.lines:
+                due_y[ic.period[0] if ic.period else o.doc_date.year] += due
+        cu.payments = _unlinked_payments(cu, pay_items)
+        paid_y: dict = defaultdict(lambda: D0)
+        for dt, amt, _ in cu.payments:
+            paid_y[dt.year] += amt
+        cu.ledger = {y: (due_y[y], max(paid_y[y], D0), max(due_y[y] - max(paid_y[y], D0), D0))
+                     for y in sorted(set(due_y) | set(paid_y))}
+        base = sum((v[2] for v in cu.ledger.values()), D0)
+        cu.not_due = sum((o.not_due for o in cu.open_docs if o.type == T), D0)
+        cu.tax_unverified = D0 if cu.tax_is_debt else cu.open_tax
         if cu.tax_is_debt:
-            base = max(D0, min(cu.open_tx, cu.formula + cu.open_tax)) + cu.open_tax
-        else:
-            base = max(D0, min(cu.open_tx, cu.formula))
-            cu.tax_unverified = cu.open_tax
-        cu.double_counted = cu.open_debt - cu.tax_unverified - base
-        cu.possibly_paid = min(cu.possibly_paid, cu.double_counted)      # מידע בלבד – כבר כלול בקיזוז
+            base += cu.open_tax
+        cu.double_counted = cu.open_debt - cu.tax_unverified - cu.not_due - base      # שולם על החשבון
+        cu.paid_after_snapshot = D0                                                    # כבר כלול בתשלומים
+        cu.net_to_collect = max(base - cu.cheques_pending, D0)
     else:
-        base = max(cu.open_debt - cu.possibly_paid, D0)
-    # שכ"ט שהופק בחשבון עסקה אך טרם מגיע: יורד מהחוב. תשלומים שלא שויכו מכסים קודם את מה שכבר מגיע.
-    cu.accrual_based = cu.has_history and any(o.lines for o in cu.open_docs)
-    cu.not_due = min(sum((o.not_due for o in cu.open_docs if o.type == T), D0), base)
-    cu.net_to_collect = max(base - cu.not_due - cu.paid_after_snapshot - cu.cheques_pending, D0)
+        if cu.has_history:
+            if cu.tax_is_debt:
+                base = max(D0, min(cu.open_tx, cu.formula + cu.open_tax)) + cu.open_tax
+            else:
+                base = max(D0, min(cu.open_tx, cu.formula))
+                cu.tax_unverified = cu.open_tax
+            cu.double_counted = cu.open_debt - cu.tax_unverified - base
+            cu.possibly_paid = min(cu.possibly_paid, cu.double_counted)
+        else:
+            base = max(cu.open_debt - cu.possibly_paid, D0)
+        cu.not_due = min(sum((o.not_due for o in cu.open_docs if o.type == T), D0), base)
+        cu.net_to_collect = max(base - cu.not_due - cu.paid_after_snapshot - cu.cheques_pending, D0)
 
     aging: dict = defaultdict(lambda: D0)
     for o in cu.open_docs:
@@ -652,19 +711,13 @@ def _classify(cu, a, gap_tol, as_of):
     cu.score = float(net) * (1 + min(days, 730) / 365)
 
     # הקשר – מופיע תמיד
-    if cu.double_counted > gap_tol:
+    if cu.double_counted > gap_tol and not cu.accrual_based:
         r.append(f"ב-Hyp פתוח {cu.open_debt:,.0f} ₪, מתוכם {cu.double_counted:,.0f} ₪ כבר שולמו "
                  "(חשבוניות שהופקו בכל תשלום ולא שויכו לחשבון העסקה)")
     if cu.accrual_based and cu.open_tx > 0:
-        s_ = cu.sums
-        paid = s_[I] + s_[IR] - s_[C]
-        nd_all = sum((o.not_due for o in cu.open_docs if o.type == T), D0)
-        calc = s_[T] - nd_all - paid
-        capped = cu.formula > cu.open_tx
-        r.append(f"חישוב: חשבונות עסקה {s_[T]:,.0f} − טרם הגיע (חלק יחסי / דוח שטרם הוגש) {nd_all:,.0f} − שולם "
-                 f"(חשבוניות מס וחשבוניות מס קבלה, בניכוי זיכויים) {paid:,.0f} = {calc:,.0f}"
-                 + (f"; החוב מוגבל לחשבונות העסקה שעדיין פתוחים ב-Hyp ({cu.open_tx:,.0f}) פחות מה שטרם הגיע = "
-                    f"{max(cu.open_tx - nd_all, D0):,.0f}" if capped else ""))
+        for y, (due, paid, debt) in cu.ledger.items():
+            if due or paid:
+                r.append(f"חישוב {y}: הגיע {due:,.0f} − שולם {paid:,.0f} = חוב {debt:,.0f}")
     if cu.not_due > gap_tol:
         why = Counter()
         for o in cu.open_docs:
