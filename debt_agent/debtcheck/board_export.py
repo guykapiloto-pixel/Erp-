@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .hyp import IR, T, Customer, explain
 
-CHUNK = 120
+MAX_BYTES = 200_000
 LIVE = ("דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "טרם מגיע", "לסגירה ב-Hyp", "תקין")
 KIND = {"annual": "דו\"ח שנתי", "balance": "מאזן / ביקורת", "period": "שכ\"ט תקופתי", "other": "אחר"}
 
@@ -67,7 +67,16 @@ def summary_lines(custs: list[Customer], summary: dict) -> list:
 
 def build(custs: list[Customer], issues: list, summary: dict) -> dict:
     rows = [_row(c) for c in custs if c.open_debt > 0]
-    chunks = [rows[i:i + CHUNK] for i in range(0, len(rows), CHUNK)] or [[]]
+    # מסמך במסד הלוח מוגבל ל-256KB: חלוקה לפי גודל
+    chunks, cur, size = [], [], 0
+    for r in rows:
+        n = len(json.dumps(r, ensure_ascii=False).encode("utf-8"))
+        if cur and size + n > MAX_BYTES:
+            chunks.append(cur)
+            cur, size = [], 0
+        cur.append(r)
+        size += n
+    chunks = chunks + [cur] if cur or not chunks else chunks
     meta = {"runAt": datetime.now().astimezone().isoformat(timespec="seconds"), "asOf": summary["as_of"].isoformat(),
             "snapshot": summary["snapshot"], "history": summary.get("history", ""), "chunks": len(chunks),
             "count": len(rows), "weekEnd": summary["week_end"].isoformat(), "summary": summary_lines(custs, summary),
