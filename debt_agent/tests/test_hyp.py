@@ -253,3 +253,19 @@ def test_tax_invoice_as_debt_option(setup):
     custs, _, _ = hyp.analyze(setup[3], setup[4], dict(setup[5], tax_invoice_open_is_debt=True), date(2026, 11, 23))
     k = {x.name: x for x in custs}["כף"]
     assert k.net_to_collect == D(4000) and k.tax_unverified == 0
+
+
+def test_fee_not_yet_owed_and_board_feedback(setup):
+    """חשבון עסקה על דו"ח 2025 שטרם הוגש אינו חוב לגבייה; תיקון בלוח ("הדוח הוגש") מחזיר אותו לגבייה."""
+    docs, board, cfg = setup[3], dict(setup[4]), setup[5]
+    items = {(hyp.T, "1002"): {"title": "", "items": [{"desc": "דו\"ח ושרות שנתי 25", "sku": "102", "amount": "4237.29"}]},
+             (hyp.T, "1006"): {"title": "", "items": [{"desc": "הנהלת חשבונות 01-12/26", "sku": "101", "amount": "2542.37"}]}}
+    c = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}
+    a = c['אלפא בע"מ']
+    assert a.not_due == D(5000) and a.net_to_collect == 0 and a.priority == "טרם מגיע" and a.contact_on is None
+    assert c["דלתא"].not_due == D(250) and c["דלתא"].net_to_collect == D(2750)     # 1/12 מ-3,000 טרם מגיע
+    board["agent_fb"] = [{"hypId": 1, "name": 'אלפא בע"מ', "verdict": "wrong", "note": "הדוח הוגש", "filedYears": [2025]}]
+    a2 = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}['אלפא בע"מ']
+    assert a2.not_due == 0 and a2.net_to_collect == D(5000) and a2.priority == "דחוף" and a2.fb_verdict == "wrong"
+    board["agent_fb"] = [{"hypId": 1, "name": 'אלפא בע"מ', "docs": {"1002": "due"}}]
+    assert {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}['אלפא בע"מ'].not_due == 0

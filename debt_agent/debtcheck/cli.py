@@ -69,8 +69,24 @@ def _run_hyp(a, cfg) -> int:
     from . import hyp, hyp_report
     docs, issues = hyp.load_hyp_csv(a.csv) if a.csv else ([], [])
     board = hyp.load_board(a.board)
-    custs, more, summary = hyp.analyze(docs, board, cfg, a.as_of)
+    doc_items = None
+    if a.pdf_cache:
+        from . import docitems
+        base = board["opendocs"].get("base", "")
+        want = []
+        for _h, rows in board["opendocs"]["rows"]:
+            for x in rows:
+                u = x[5] if len(x) > 5 and x[5] else ""
+                want.append((hyp.BOARD_TYPE.get(int(x[2]), str(x[2])), str(x[1]),
+                             u if str(u).startswith("http") else (base + u if u else "")))
+        doc_items, errs = docitems.load_items(want, a.pdf_cache)
+        for typ, num, err in errs:
+            issues.append(hyp.Issue("warning", "DOC_NOT_READ", f"העתק המסמך לא נקרא ({err}) – לא סווג", "", f"{typ} {num}"))
+    custs, more, summary = hyp.analyze(docs, board, cfg, a.as_of, doc_items)
     issues += more
+    if a.board_json:
+        from . import board_export
+        board_export.write(a.board_json, custs, issues, summary)
     if a.customer:
         q = norm_text(a.customer)
         hits = [c for c in custs if q in c.name or q == c.crn or q == str(c.hyp_id)]
@@ -84,6 +100,8 @@ def _run_hyp(a, cfg) -> int:
             for o in sorted(c.open_docs, key=lambda o: o.doc_date):
                 pp = f"  ← ייתכן ששולם: {o.possibly_paid_by.type} {o.possibly_paid_by.num}" if o.possibly_paid_by else ""
                 print(f"    {o.doc_date:%d/%m/%Y} {o.type} {o.num} יתרה {o.remaining:,.2f}{pp}")
+                for ic, amt, due in o.lines:
+                    print(f"        · {ic.desc or '(ללא פירוט)'}: {amt:,.2f}, מגיע {due:,.2f} – {ic.reason}")
             print("  " + " | ".join(c.reasons), "\n")
         return 0 if hits else 1
     path = hyp_report.write(a.out, custs, issues, summary,
@@ -113,6 +131,8 @@ def main(argv=None) -> int:
     h.add_argument("--csv", help="דוח מסמכים מ-Hyp (report.csv). בלעדיו – הלוח בלבד, ללא בקרת הנוסחה")
     h.add_argument("--board", required=True, help="תיקיית תמונת מצב של הלוח (hyp/*.json, custList/*.json)")
     h.add_argument("--out", default="collections_report.xlsx")
+    h.add_argument("--pdf-cache", help="תיקיית מטמון להעתקי המסמכים הפתוחים (קריאת שורות הפירוט מהמסמכים עצמם)")
+    h.add_argument("--board-json", help="תיקייה לכתיבת תוצאות הסוכן בפורמט של הלוח (agent/meta, agent/r*)")
     h.add_argument("--as-of", type=date.fromisoformat)
     h.add_argument("--customer")
     i = sub.add_parser("inspect")

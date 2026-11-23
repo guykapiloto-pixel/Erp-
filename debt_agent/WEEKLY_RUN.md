@@ -1,18 +1,23 @@
 # ריצה שבועית – ניתוח גבייה
 
 1. **ייצוא הלוח** "יעל EK-גבייה" (קריאה בלבד) עם ArtifactData `list`, `out_dir=<board>`, `limit` 1000, לאוספים:
-   `hyp`, `custList`, `cfile`, `contacts`, `checks`, `clients`, `failed`, `cheques`.
+   `hyp`, `custList`, `cfile`, `contacts`, `checks`, `clients`, `failed`, `cheques`, `reports`, `agentFb`.
 2. **הרצה:**
    ```bash
    cd debt_agent
-   python -m debtcheck hyp --config config.hyp.yaml --board <board> --out collections_report_<YYYY-MM-DD>.xlsx \
-          [--csv report.csv]
+   python -m debtcheck hyp --config config.hyp.yaml --board <board> --pdf-cache <cache> --board-json <agent_out> \
+          --out collections_report_<YYYY-MM-DD>.xlsx [--csv report.csv]
    ```
    `--csv` הוא דוח המסמכים המלא מ-Hyp. **בלעדיו אין קיזוז של ספירה כפולה** (חשבון עסקה פתוח שכבר הופקה בגינו
    חשבונית שלא שויכה), ולכן הסכומים גבוהים מדי. בלי הקובץ הדוח נשען על כללי הלוח בלבד: חיוב קבוע לא נספר,
    יתרות שיעל בדקה יורדות, שיקים דחויים מנוכים.
-3. **בקרות שחייבות לעבור לפני הפצה:**
+   `--pdf-cache` מוריד את העתקי המסמכים הפתוחים וקורא את שורות הפירוט שלהם (מה מגיע לגבייה ומה טרם מגיע).
+   `--board-json` כותב את תוצאות הסוכן בפורמט של לשונית "סוכן גבייה" בלוח.
+3. **עדכון הלוח:** לכתוב את הקבצים שב-`<agent_out>` למסד הלוח, לאוסף `agent` בלבד (`r0`…`rN` ואז `meta`),
+   עם ArtifactData `set` + `file_path` + `if_version`. אסור לכתוב לשום אוסף אחר. משוב הבודקים נמצא ב-`agentFb`
+   והסוכן קורא אותו בכל ריצה (✓/✗, הערה, תיקון למסמך, "הדוח הוגש לשנת…").
+4. **בקרות שחייבות לעבור לפני הפצה:**
    - סך החוב הפתוח שחושב שווה לסה"כ בלוח (הפרש עד ₪2).
    - אין שגיאה `BOARD_TOTAL_DIFF`.
-4. **הפצה:** הגיליון הראשון בדוח, "רשימת השבוע", הוא רשימת העבודה של מנהלת הגבייה.
-5. **נתוני לקוחות** (ייצוא הלוח, CSV, דוחות) לא נכנסים ל-git.
+5. **הפצה:** הגיליון הראשון בדוח, "רשימת השבוע", הוא רשימת העבודה של מנהלת הגבייה.
+6. **נתוני לקוחות** (ייצוא הלוח, CSV, דוחות) לא נכנסים ל-git.

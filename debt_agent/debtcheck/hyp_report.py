@@ -10,7 +10,7 @@ from .hyp import AGING, C, I, IR, R, T, Customer, Issue
 
 AG = [a[2] for a in AGING]
 FILL = {"דחוף": "F8CBAD", "לטיפול": "FCE4D6", "מעקב": "DDEBF7", "ממתין להנהלה": "FFE699", "לסגירה ב-Hyp": "E4DFEC",
-        "חיוב קבוע": "E2EFDA", "נבדק – תקין": "E2EFDA",
+        "טרם מגיע": "DDEBF7", "חיוב קבוע": "E2EFDA", "נבדק – תקין": "E2EFDA",
         "מוחרג": "D9D9D9", "תקין": "FFFFFF"}
 SEV = {"error": "שגיאה", "warning": "אזהרה", "info": "מידע"}
 
@@ -61,6 +61,8 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
     pr = Counter(c.priority for c in custs)
     tot = lambda attr, cond=lambda c: True: sum((getattr(c, attr) for c in custs if cond(c)), Decimal(0))
     Z = Decimal(0)
+    LIVE = ("דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "טרם מגיע", "לסגירה ב-Hyp", "תקין")
+    grp = lambda k: sum((c.open_debt - c.double_counted - c.tax_unverified for c in custs if c.priority == k), Z)
     rows = [
         ("תמונת מצב הלוח (מסמכים פתוחים ב-Hyp)", summary["snapshot"]),
         ("מקור היסטוריה", summary.get("history", "")),
@@ -70,12 +72,15 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
         ("", ""),
         ("חוב פתוח לפי Hyp (ברוטו)", _f(summary["open_total"])),
         ("(−) נספר כפול: מסמך פתוח שכבר מכוסה בחשבונית/תשלום שלא שויכו", -_f(tot("double_counted"))),
-        ("(−) לקוחות בחיוב קבוע – לא נספרים (כמו בלוח)", -_f(tot("net_to_collect", lambda c: c.priority == "חיוב קבוע"))),
-        ("(−) יעל בדקה: תקין, ירד מהיתרה", -_f(tot("net_to_collect", lambda c: c.priority == "נבדק – תקין"))),
-        ("(−) מוחרגים / הוסתרו בלוח", -_f(tot("net_to_collect", lambda c: c.priority == "מוחרג"))),
+        ("(−) שכ\"ט שהופק בחשבון עסקה אך טרם מגיע (דוח / מאזן שטרם הוגש, חודשים עתידיים)",
+         -_f(tot("not_due", lambda c: c.priority in LIVE))),
+        ("(−) לקוחות בחיוב קבוע – לא נספרים (כמו בלוח)", -_f(grp("חיוב קבוע"))),
+        ("(−) יעל בדקה: תקין, ירד מהיתרה", -_f(grp("נבדק – תקין"))),
+        ("(−) מוחרגים / הוסתרו בלוח", -_f(grp("מוחרג"))),
         ("(−) חשבוניות מס פתוחות ב-Hyp – לאימות תשלום, לא לגבייה", -_f(tot("tax_unverified"))),
         ("(−) שיקים דחויים בידינו ותשלומים אחרי עדכון הלוח",
-         -_f(sum((c.open_debt - c.double_counted - c.tax_unverified - c.net_to_collect for c in custs), Z))),
+         -_f(sum((c.open_debt - c.double_counted - c.tax_unverified - c.not_due - c.net_to_collect
+                  for c in custs if c.priority in LIVE), Z))),
         ("(−) ממתין לתשובת הנהלה (גיא / דקל)", -_f(tot("net_to_collect", lambda c: c.priority == "ממתין להנהלה"))),
         ("= חוב לגבייה – לפנייה ללקוחות", _f(tot("collectible"))),
         ("", ""),
@@ -116,14 +121,14 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
 
     # 2. למי לפנות
     ws = sheet("למי לפנות", ["עדיפות", "פעולה", "מתי", "לקוח", "ח.פ/ת.ז", "מס' הנה\"ח", "טלפון", "מייל", "איש קשר", "חוב פתוח ב-Hyp",
-                              "נספר כפול (מכוסה)", "שיקים / שולם אחרי עדכון", "לגבייה (נטו)", "מסמך פתוח ותיק", "ימים", "מס' מסמכים פתוחים",
+                              "נספר כפול (מכוסה)", "טרם מגיע", "לגבייה (נטו)", "מסמך פתוח ותיק", "ימים", "מס' מסמכים פתוחים",
                               "תשלום אחרון", "סכום תשלום אחרון", "נגבה 12 חודשים", "חיוב קבוע", "סכום שנדרש בלוח", "סיבות"])
     for c in custs:
         if c.priority == "תקין":
             continue
         lp = c.last_payment
         ws.append([c.priority, c.action, c.when, c.name, c.crn, c.bk, c.phone, c.email, c.contact, _f(c.open_debt), _f(c.double_counted),
-                   _f(c.open_debt - c.double_counted - c.tax_unverified - c.net_to_collect), _f(c.net_to_collect), _dt(c.oldest_open), c.oldest_days,
+                   _f(c.not_due), _f(c.net_to_collect), _dt(c.oldest_open), c.oldest_days,
                    len(c.open_docs), _dt(lp.doc_date) if lp else "", _f(lp.total) if lp else None, _f(c.paid_12m),
                    "כן" if c.auto_charge else "", _f(c.demanded) if c.demanded is not None else None,
                    " | ".join(c.reasons)])
@@ -160,18 +165,21 @@ def write(path: str | Path, custs: list[Customer], issues: list[Issue], summary:
                    ", ".join(f"{o.num} ({_f(o.remaining):,.0f})" for o in sorted(c.open_docs, key=lambda o: o.doc_date))])
     finish(ws, [30, 11, 13, 13, 14, 12, 13, 13, 14, 11, 13, 80], money_cols=(4, 5, 6, 7, 8, 9, 10, 11))
 
-    # 4. מסמכים פתוחים
-    ws = sheet("מסמכים פתוחים", ["לקוח", "סוג", "מספר", "תאריך", "ימים", "גיול", "סכום מקורי", "יתרה פתוחה",
-                                 "לפני מע\"מ", "תיאור", "ייתכן ששולם ע\"י", "תאריך התשלום", "מסמך"])
+    # 4. מסמכים פתוחים – שורה לכל שורת פירוט במסמך
+    ws = sheet("מסמכים פתוחים", ["לקוח", "סוג", "מספר", "תאריך", "ימים", "כותרת המסמך", "פירוט השורה", "סוג חיוב",
+                                 "שנה / תקופה", "יתרה פתוחה", "מגיע לגבייה", "טרם מגיע", "נימוק", "עדיפות הלקוח", "מסמך"])
+    KIND = {"annual": "דו\"ח שנתי", "balance": "מאזן / ביקורת", "period": "שכ\"ט תקופתי", "other": "אחר"}
     for c in custs:
         for o in sorted(c.open_docs, key=lambda o: o.doc_date):
-            p = o.possibly_paid_by
             days = (as_of - o.doc_date).days
-            from .hyp import bucket
-            ws.append([c.name, o.type, o.num, _dt(o.doc_date), days, bucket(days), _f(o.total), _f(o.remaining),
-                       _f(o.before_vat), o.description, f"{p.type} {p.num}" if p else "", _dt(p.doc_date) if p else "",
-                       o.url])
-    finish(ws, [30, 14, 9, 11, 7, 9, 12, 12, 11, 30, 20, 11, 8], money_cols=(7, 8, 9), link_col=13)
+            for ic, amt, due in (o.lines or [(None, o.remaining, o.remaining)]):
+                per = ""
+                if ic is not None:
+                    per = f"{ic.period[1]:02d}-{ic.period[2]:02d}/{ic.period[0]}" if ic.period else (ic.year or "")
+                ws.append([c.name, o.type, o.num, _dt(o.doc_date), days, o.title or o.description,
+                           ic.desc if ic else "", KIND.get(ic.kind, "") if ic else "", per, _f(amt), _f(due),
+                           _f(amt - due), ic.reason if ic else "המסמך לא נקרא", c.priority, o.url])
+    finish(ws, [30, 14, 9, 11, 7, 20, 30, 14, 12, 12, 12, 12, 50, 13, 8], money_cols=(10, 11, 12), link_col=15)
 
     # 5. בעיות נתונים
     ws = sheet("בעיות נתונים", ["חומרה", "קוד", "לקוח", "תיאור", "מסמך"])

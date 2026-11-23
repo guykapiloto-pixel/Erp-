@@ -92,6 +92,11 @@ class OpenDoc:
     description: str
     url: str
     possibly_paid_by: HypDoc | None = None
+    title: str = ""
+    lines: list = field(default_factory=list)     # [(ItemClass, סכום כולל מע"מ מתוך היתרה, מזה מגיע לגבייה)]
+    due: Decimal = D0                             # מתוך היתרה הפתוחה: מגיע לגבייה עכשיו
+    not_due: Decimal = D0                         # שכ"ט שהופק אך טרם מגיע
+    unknown: Decimal = D0                         # אין פירוט במסמך (נספר ב-due)
 
 
 @dataclass
@@ -153,6 +158,9 @@ class Customer:
     tags: list = field(default_factory=list)          # רשימות חריגים בלוח
     failed_charge: date | None = None     # חיוב אוטומטי שנכשל וטרם טופל
     cheques_pending: Decimal = D0         # שיקים דחויים שבידינו
+    not_due: Decimal = D0                 # שכ"ט שהופק בחשבון עסקה אך טרם מגיע (דוח/מאזן שטרם הוגש, חודשים עתידיים)
+    fb_verdict: str = ""                  # משוב על הסוכן מהלוח: ok / wrong
+    fb_note: str = ""
     collectible: Decimal = D0             # נטו לגבייה אם הלקוח ברשימת הפנייה, אחרת 0
     double_counted: Decimal = D0          # חוב פתוח ב-Hyp שכבר מכוסה בחשבוניות/תשלומים שלא שויכו
     has_history: bool = True
@@ -251,7 +259,9 @@ def load_board(snapshot_dir: str | Path) -> dict:
             "customers": custs, "warnings": warnings, "pay": hyp.get("pay"),
             "cfile": _load_coll(root / "cfile"), "contacts": list(_load_coll(root / "contacts").values()),
             "checks": list(_load_coll(root / "checks").values()), "lists": list(_load_coll(root / "clients").values()),
-            "failed": list(_load_coll(root / "failed").values()), "cheques": list(_load_coll(root / "cheques").values())}
+            "failed": list(_load_coll(root / "failed").values()), "cheques": list(_load_coll(root / "cheques").values()),
+            "reports": list(_load_coll(root / "reports").values()),
+            "agent_fb": list(_load_coll(root / "agentFb").values())}
 
 
 def _load_coll(d: Path) -> dict:
@@ -261,12 +271,13 @@ def _load_coll(d: Path) -> dict:
 # ---------------------------------------------------------------- analysis
 
 ACTIONS = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה ללקוח", "מעקב": "פנייה ללקוח",
-           "לסגירה ב-Hyp": "סגירת מסמך ב-Hyp", "ממתין להנהלה": "ממתין לגיא/דקל", "נבדק – תקין": "ללא פעולה",
+           "לסגירה ב-Hyp": "סגירת מסמך ב-Hyp", "טרם מגיע": "ללא פעולה", "ממתין להנהלה": "ממתין לגיא/דקל", "נבדק – תקין": "ללא פעולה",
            "חיוב קבוע": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
-ORDER = ["דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "לסגירה ב-Hyp", "חיוב קבוע", "נבדק – תקין", "מוחרג", "תקין"]
+ORDER = ["דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "טרם מגיע", "לסגירה ב-Hyp", "חיוב קבוע", "נבדק – תקין", "מוחרג", "תקין"]
 
-def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None
+def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None, doc_items: dict | None = None
             ) -> tuple[list[Customer], list[Issue], dict]:
+    """doc_items: {(type, number): {"items": [...], "title": str}} from docitems.load_items – the documents themselves."""
     a = cfg.get("alerts", {})
     gap_tol = Decimal(str(a.get("formula_gap_tolerance", 100)))
     excluded_ids = {int(x) for x in cfg.get("exclude_hyp_ids", [])}
@@ -474,6 +485,31 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
 
     # per customer
     out = []
+    # הדוחות ששודרו (מהלוח) ותיקונים שהושארו לסוכן בלוח
+    filed: dict = defaultdict(set)
+    for rp in board.get("reports") or []:
+        if rp.get("kind") == "capital" or not str(rp.get("year") or "").isdigit():
+            continue
+        cu = find(rp.get("hypId"), rp.get("client"))
+        if cu:
+            filed[cu.key].add(int(rp["year"]))
+    fb_docs: dict = {}
+    for fb in board.get("agent_fb") or []:
+        cu = find(fb.get("hypId"), fb.get("name"))
+        if not cu:
+            continue
+        cu.fb_verdict, cu.fb_note = norm_text(fb.get("verdict")), norm_text(fb.get("note"))
+        for num, v in (fb.get("docs") or {}).items():
+            fb_docs[str(num)] = v
+        for y in fb.get("filedYears") or []:
+            filed[cu.key].add(int(y))
+    if doc_items is not None:
+        from .classify import classify_item
+        for cu in custs.values():
+            for o in cu.open_docs:
+                _classify_doc(o, doc_items.get((o.type, o.num)), as_of, filed.get(cu.key, set()), fb_docs.get(o.num),
+                              cfg, classify_item)
+
     for cu in custs.values():
         cu.has_history = has_history
         cu.tax_is_debt = bool(cfg.get("tax_invoice_open_is_debt", False))
@@ -500,6 +536,29 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
                "history": "קובץ Hyp מלא" if has_history else "הלוח בלבד (ללא בקרת נוסחה)",
                "week_end": week_end(as_of)}
     return out, issues, summary
+
+
+def _classify_doc(o: OpenDoc, parsed: dict | None, as_of: date, filed_years: set, override, cfg: dict, classify_item):
+    """פיצול היתרה הפתוחה של מסמך לפי שורות הפירוט שלו: מה מגיע לגבייה ומה טרם מגיע."""
+    items = (parsed or {}).get("items") or []
+    title = o.description or (parsed or {}).get("title") or ""
+    if title.startswith("הקצאה מספר"):
+        title = ""
+    o.title = title
+    if not items:
+        items = [{"desc": title, "sku": "", "amount": "1"}]
+    tot = sum((abs(Decimal(i["amount"])) for i in items), D0)
+    for i in items:
+        share = (abs(Decimal(i["amount"])) / tot) if tot else Decimal(1) / len(items)
+        ic = classify_item(i.get("desc", ""), i.get("sku", ""), title, o.doc_date, as_of, filed_years=filed_years,
+                           override=override, cfg=cfg)
+        amt = (o.remaining * share).quantize(Decimal("0.01"))
+        due = (amt * ic.due_share).quantize(Decimal("0.01"))
+        o.lines.append((ic, amt, due))
+        o.due += due
+        o.not_due += amt - due
+        if ic.status == "unknown":
+            o.unknown += amt
 
 
 def _compute(cu: Customer, as_of: date, snap: date) -> None:
@@ -557,14 +616,17 @@ def _compute(cu: Customer, as_of: date, snap: date) -> None:
         cu.possibly_paid = min(cu.possibly_paid, cu.double_counted)      # מידע בלבד – כבר כלול בקיזוז
     else:
         base = max(cu.open_debt - cu.possibly_paid, D0)
-    cu.net_to_collect = max(base - cu.paid_after_snapshot - cu.cheques_pending, D0)
+    # שכ"ט שהופק בחשבון עסקה אך טרם מגיע: יורד מהחוב. תשלומים שלא שויכו מכסים קודם את מה שכבר מגיע.
+    cu.not_due = min(sum((o.not_due for o in cu.open_docs if o.type == T), D0), base)
+    cu.net_to_collect = max(base - cu.not_due - cu.paid_after_snapshot - cu.cheques_pending, D0)
 
     aging: dict = defaultdict(lambda: D0)
     for o in cu.open_docs:
         aging[bucket((as_of - o.doc_date).days)] += o.remaining
     cu.aging = dict(aging)
     if cu.open_docs:
-        cu.oldest_open = min(o.doc_date for o in cu.open_docs)
+        due_docs = [o for o in cu.open_docs if o.due > 0 or not o.lines] or cu.open_docs
+        cu.oldest_open = min(o.doc_date for o in due_docs)      # הוותק נמדד רק על מה שכבר מגיע
         cu.oldest_days = (as_of - cu.oldest_open).days
 
 
@@ -586,6 +648,13 @@ def _classify(cu, a, gap_tol, as_of):
     if cu.double_counted > gap_tol:
         r.append(f"ב-Hyp פתוח {cu.open_debt:,.0f} ₪, מתוכם {cu.double_counted:,.0f} ₪ כבר מכוסים בחשבוניות/תשלומים "
                  "שלא שויכו לחשבון העסקה – לסגור ב-Hyp")
+    if cu.not_due > gap_tol:
+        why = Counter()
+        for o in cu.open_docs:
+            for ic, amt, due in o.lines:
+                if amt - due > 0:
+                    why[ic.reason] += amt - due
+        r.append(f"טרם מגיע {cu.not_due:,.0f} ₪: " + "; ".join(f"{k} ({v:,.0f})" for k, v in why.most_common(3)))
     if cu.cheques_pending:
         r.append(f"שיקים דחויים בידינו {cu.cheques_pending:,.0f} ₪")
     if cu.paid_after_snapshot:
@@ -618,6 +687,9 @@ def _classify(cu, a, gap_tol, as_of):
     elif cu.auto_charge:
         cu.priority = "חיוב קבוע"
         r.insert(0, "בחיוב קבוע חודשי – לא נספר ביתרת החייבים (כמו בלוח)")
+    elif net < min_debt and cu.not_due >= min_debt:
+        cu.priority = "טרם מגיע"
+        r.insert(0, "אין חוב לגבייה כרגע: שכ\"ט שהופק בחשבון עסקה אך העבודה טרם בוצעה / הוגשה")
     elif net < min_debt and cu.tax_unverified >= min_debt:
         cu.priority = "ממתין להנהלה"
         r.insert(0, "אין חשבון עסקה לגבייה; חשבונית מס פתוחה – לאימות מול הנהלת החשבונות")
