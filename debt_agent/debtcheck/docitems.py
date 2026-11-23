@@ -27,7 +27,7 @@ def _num(s: str) -> Decimal:
 def parse_pdf_text(text: str) -> dict:
     """-> {"items": [{"desc", "sku", "qty", "price", "amount"}], "note": str}. amount is before VAT."""
     lines = [_BIDI.sub("", ln).rstrip() for ln in text.splitlines()]
-    items, note, mode, title, prev = [], [], None, "", ""
+    items, note, mode, title, prev, refs = [], [], None, "", "", []
     for ln in lines:
         s = ln.strip()
         if s.startswith("פריטים"):
@@ -37,6 +37,8 @@ def parse_pdf_text(text: str) -> dict:
             continue
         if mode is None and s:
             prev = s
+            if "עבור" in s or s.startswith("ביטול"):
+                refs.append(s)          # "חשבונית מס קבלה עבור חשבונית עסקה מספר N", "חשבונית מס עבור קבלה מספר N"
         if s.startswith("הערה מצורפת"):
             mode = "note"
             continue
@@ -74,7 +76,7 @@ def parse_pdf_text(text: str) -> dict:
     for i in items:
         i.pop("discounted", None)
         i["desc"] = re.sub(r"\s*הופק על ידי www\.hyp\.co\.il.*$", "", i["desc"]).strip()
-    return {"items": items, "note": " ".join(note), "title": title}
+    return {"items": items, "note": " ".join(note), "title": title, "refs": refs}
 
 
 def _fetch_one(url: str, pdf: Path, keep: bool = True) -> str:
@@ -90,7 +92,7 @@ def _fetch_one(url: str, pdf: Path, keep: bool = True) -> str:
 
 FOLDER = {"חשבונית עסקה": "Proforma%20Invoice", "חשבונית מס קבלה": "Tax%20Invoice%20Receipt", "חשבונית מס": "Tax%20Invoice",
           "קבלה": "Receipt", "חשבונית זיכוי": "Credit%20Invoice"}
-_LINK = re.compile(r"עבור\s+(חשבונית עסקה|קבלה|חשבונית מס קבלה|חשבונית מס)\s+מספר\s*(\d+)")
+_LINK = re.compile(r"(?:עבור|ביטול)\s+(חשבונית עסקה|חשבונית מס קבלה|חשבונית מס|קבלה)\s+מספר\s*(\d+)")
 
 
 def doc_url(base: str, account: str, doc_type: str, issued_year: int, doc_uuid: str) -> str:
@@ -100,7 +102,8 @@ def doc_url(base: str, account: str, doc_type: str, issued_year: int, doc_uuid: 
 
 def links_of(parsed: dict) -> list:
     """[(document type, number)] that this document says it was issued for ("עבור חשבונית עסקה מספר N")."""
-    return [(m.group(1), m.group(2)) for m in _LINK.finditer(parsed.get("title") or "")]
+    text = " ".join(parsed.get("refs") or []) + " " + (parsed.get("title") or "")
+    return [(m.group(1), m.group(2)) for m in _LINK.finditer(text)]
 
 
 def load_items(open_docs: list[tuple[str, str, str]], cache_dir: str | Path, workers: int = 12,
