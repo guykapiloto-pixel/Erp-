@@ -10,7 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
-from .hyp import IR, T, Customer
+from .hyp import IR, T, Customer, explain
 
 CHUNK = 120
 LIVE = ("דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "טרם מגיע", "לסגירה ב-Hyp", "תקין")
@@ -42,7 +42,7 @@ def _row(c: Customer) -> dict:
             "lp": lp.doc_date.isoformat() if lp else "", "lpa": _n(lp.total) if lp else 0, "auto": c.auto_charge,
             "f": {"t": _n(s[T]), "i": _n(s["חשבונית מס"]), "ir": _n(s[IR]), "c": _n(s["חשבונית זיכוי"]),
                   "f": _n(c.formula)} if c.has_history else None,
-            "why": c.reasons, "docs": docs}
+            "why": c.reasons, "docs": docs, "x": explain(c)}
 
 
 def summary_lines(custs: list[Customer], summary: dict) -> list:
@@ -51,9 +51,9 @@ def summary_lines(custs: list[Customer], summary: dict) -> list:
     grp = lambda k: sum((c.open_debt - c.double_counted - c.tax_unverified for c in custs if c.priority == k), Z)
     return [
         ["חוב פתוח ב-Hyp (ברוטו)", _n(summary["open_total"])],
-        ["נספר כפול: מסמך פתוח שכבר מכוסה בחשבונית / תשלום שלא שויכו", -_n(tot("double_counted"))],
-        ["שכ\"ט שהופק אך טרם מגיע (דוח / מאזן שטרם הוגש, חודשים עתידיים)", -_n(tot("not_due", lambda c: c.priority in LIVE))],
-        ["לקוחות בחיוב קבוע – לא נספרים", -_n(grp("חיוב קבוע"))],
+        ["כבר שולם: תשלומים חודשיים שהופקה בגינם חשבונית נפרדת ולא שויכו לחשבון העסקה", -_n(tot("double_counted"))],
+        ["הופק אך טרם הגיע: חודשים עתידיים, דוח / מאזן שטרם הוגש", -_n(tot("not_due", lambda c: c.priority in LIVE))],
+        ["חיוב קבוע שמשולם כסדרו", -_n(grp("חיוב קבוע"))],
         ["יעל בדקה: תקין, ירד מהיתרה", -_n(grp("נבדק – תקין"))],
         ["מוחרגים / הוסתרו", -_n(grp("מוחרג"))],
         ["חשבוניות מס פתוחות – לאימות תשלום", -_n(tot("tax_unverified"))],

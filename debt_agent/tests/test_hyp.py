@@ -263,7 +263,8 @@ def test_fee_not_yet_owed_and_board_feedback(setup):
     c = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}
     a = c['אלפא בע"מ']
     assert a.not_due == D(5000) and a.net_to_collect == 0 and a.priority == "טרם מגיע" and a.contact_on is None
-    assert c["דלתא"].not_due == D(250) and c["דלתא"].net_to_collect == D(2750)     # 1/12 מ-3,000 טרם מגיע
+    # שכ"ט חודשי משולם בחודש העוקב: עד 23/11 הסתיימו 10 חודשים → 2/12 מ-3,000 טרם מגיעים
+    assert c["דלתא"].not_due == D(500) and c["דלתא"].net_to_collect == D(2500)
     board["agent_fb"] = [{"hypId": 1, "name": 'אלפא בע"מ', "verdict": "wrong", "note": "הדוח הוגש", "filedYears": [2025]}]
     a2 = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}['אלפא בע"מ']
     assert a2.not_due == 0 and a2.net_to_collect == D(5000) and a2.priority == "דחוף" and a2.fb_verdict == "wrong"
@@ -297,7 +298,7 @@ def test_payments_count_only_against_open_accounts_of_the_same_year(tmp_path):
     D0 = D(0)
     docs = [doc("91", T_, "2025-03-17", 7000), doc("92", T_, "2026-02-17", 6000), doc("93", T_, "2026-02-17", 6000)]
     docs += [doc(f"25{m:02d}", IR_, f"2025-{m:02d}-15", 500) for m in range(4, 13)]          # תשלומי 2025
-    docs += [doc(f"26{m:02d}", IR_, f"2026-{m:02d}-15", 500) for m in range(1, 12)]          # 11 תשלומים ב-2026
+    docs += [doc(f"26{m:02d}", IR_, f"2026-{m:02d}-15", 500) for m in range(1, 11)]          # 10 תשלומים ב-2026
     docs += [doc("2700", IR_, "2026-06-20", 900)]                                             # שויך לחשבון עסקה אחר
     board = {"as_of": date(2026, 11, 23), "as_of_raw": "2026-11-23", "auto": set(), "bk": {}, "warnings": [],
              "customers": [{"h": 7, "n": "מקס", "crn": "5109"}],
@@ -307,10 +308,19 @@ def test_payments_count_only_against_open_accounts_of_the_same_year(tmp_path):
     pay = {(IR_, "2700"): {"title": "חשבונית מס קבלה עבור חשבונית עסקה מספר 88", "items": []}}
     cfg = {"alerts": {}, "prorate_future_periods": True}
     (c,), _, _ = hyp.analyze(docs, board, cfg, date(2026, 11, 23), items, pay)
-    assert c.ledger[2026] == (D(5500), D(5500), D(0))            # הגיע 6,000×11/12; שולם 11×500; ה-900 המשויך לא נספר
-    assert c.net_to_collect == 0 and c.not_due == D(500) and c.double_counted == D(5500)
+    # עד 23/11 הסתיימו 10 חודשים: הגיע 6,000×10/12; שולם 10×500; ה-900 המשויך לא נספר
+    assert c.ledger[2026] == (D(5000), D(5000), D(0))
+    assert c.net_to_collect == 0 and c.not_due == D(1000) and c.double_counted == D(5000)
     assert c.priority == "טרם מגיע" and c.contact_on is None
-    # אותו לקוח עם 8 תשלומים בלבד ב-2026 → חוב של 3 חודשים
-    (c2,), _, _ = hyp.analyze([d for d in docs if d.num not in ("2609", "2610", "2611")], board, cfg,
+    # אותו לקוח בלי 3 התשלומים האחרונים → חוב של 3 חודשים
+    (c2,), _, _ = hyp.analyze([d for d in docs if d.num not in ("2608", "2609", "2610")], board, cfg,
                               date(2026, 11, 23), items, pay)
     assert c2.net_to_collect == D(1500)
+
+
+def test_payment_belongs_to_the_period_written_on_it():
+    """תשלום מ-01/2026 שעליו כתוב "12/25" שייך ל-2025 ולא מקטין את החוב של 2026."""
+    assert hyp._pay_period("הנה\"ח 12/25", date(2026, 1, 20)) == date(2025, 12, 1)
+    assert hyp._pay_period("שכ\"ט 25", date(2026, 2, 1)) == date(2025, 12, 1)
+    assert hyp._pay_period("חיוב אוטומטי", date(2026, 3, 5)) == date(2026, 3, 5)
+    assert hyp._pay_period("הנהלת חשבונות 01-03/2026", date(2026, 10, 4)) == date(2026, 3, 1)

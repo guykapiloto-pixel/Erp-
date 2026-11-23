@@ -511,10 +511,10 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
         from .classify import classify_item
         from datetime import timedelta
         prev_month_end = as_of.replace(day=1) - timedelta(days=1)
-        auto_now = bool(cfg.get("auto_charge_accrue_current_month", False))
+        cur_month = bool(cfg.get("accrue_current_month", False))
         for cu in custs.values():
-            # לקוח בחיוב קבוע: החודש השוטף נספר רק אחרי שהסתיים, כדי שחיוב שעוד לא בוצע החודש לא ייראה כפיגור
-            eff = as_of if (auto_now or not cu.auto_charge) else prev_month_end
+            # שכ"ט חודשי משולם בחודש העוקב: מגיע רק על חודשים שהסתיימו
+            eff = as_of if cur_month else prev_month_end
             for o in cu.open_docs:
                 _classify_doc(o, doc_items.get((o.type, o.num)), eff, filed.get(cu.key, set()), fb_docs.get(o.num),
                               cfg, classify_item)
@@ -570,6 +570,18 @@ def _classify_doc(o: OpenDoc, parsed: dict | None, as_of: date, filed_years: set
             o.unknown += amt
 
 
+def _pay_period(text: str, paid_on: date) -> date:
+    """לאיזה חודש התשלום שייך: לפי מה שכתוב עליו (12/25, הנה"ח 2026, שכ"ט 25), אחרת לפי תאריך התשלום."""
+    from .classify import parse_period, parse_year
+    p = parse_period(text)
+    if p:
+        return date(p[0], p[2], 1)
+    y = parse_year(text)
+    if y and abs(y - paid_on.year) <= 1:
+        return date(y, paid_on.month, 1) if y == paid_on.year else date(y, 12, 1)
+    return paid_on
+
+
 def _unlinked_payments(cu: Customer, pay_items: dict) -> list:
     """התשלומים שהלקוח ביצע "על החשבון": [(תאריך, סכום, תיאור)].
 
@@ -593,13 +605,15 @@ def _unlinked_payments(cu: Customer, pay_items: dict) -> list:
         if d.type not in (IR, I, R, C) or to_proforma(d.type, d.num):
             continue
         items = (pay_items.get((d.type, d.num)) or {}).get("items") or []
-        what = "; ".join(i["desc"] for i in items if i.get("desc"))[:60]
+        what = re.sub(r"\s*פרטי תשלום:?.*$", "", "; ".join(i["desc"] for i in items if i.get("desc")))[:60]
+        ttl = (pay_items.get((d.type, d.num)) or {}).get("title") or ""
+        when = _pay_period(what + " " + ttl, d.doc_date)
         if d.type in (IR, I):
-            out.append((d.doc_date, d.total, f"{d.type} {d.num}" + (f" ({what})" if what else "")))
+            out.append((when, d.total, f"{d.type} {d.num} מ-{d.doc_date:%d/%m/%Y}" + (f" ({what})" if what else "")))
         elif d.type == R:
             # קבלה נספרת רק אם לא הופקה בגינה חשבונית מס (אחרת התשלום היה נספר פעמיים) ולא בוטלה
             if d.total > 0 and d.num not in invoiced_receipts and id(d) not in cancelled:
-                out.append((d.doc_date, d.total, f"קבלה {d.num}"))
+                out.append((_pay_period(ttl, d.doc_date), d.total, f"קבלה {d.num} מ-{d.doc_date:%d/%m/%Y}"))
         else:
             # זיכוי מבטל חשבונית: יורד מהתשלומים של שנת החשבונית שבוטלה
             ref = next((x for lt, ln in link.get((d.type, d.num), []) for x in alld if x.type == lt and x.num == ln), None)
@@ -874,3 +888,65 @@ def _spread(custs: list, cfg: dict, as_of: date) -> None:
             label = "היום" if slot == days[0] else f"{slot:%d/%m/%Y}"
             c.when = label + c.when[c.when.find(" ("):] if " (" in c.when else label
         c.contact_on = slot
+
+
+# ---------------------------------------------------------------- explanation: what the debt is made of
+
+def explain(cu: Customer) -> dict:
+    """פירוק החוב לשפה פשוטה.
+
+    -> {"sentence": str,
+        "years": [{"y", "due", "paid", "debt", "charges": [[מסמך, פירוט, סכום, מגיע, הסבר]], "payments": [[תאריך, סכום, מסמך]]}],
+        "notdue": [[מסמך, פירוט, סכום, הסבר]],
+        "other": [[נושא, סכום, הסבר]]}
+    """
+    years, notdue, other = {}, [], []
+    for o in sorted(cu.open_docs, key=lambda o: o.doc_date):
+        if o.type != T:
+            continue
+        for ic, amt, due in o.lines:
+            y = ic.period[0] if ic.period else o.doc_date.year
+            if due > 0:
+                yr = years.setdefault(y, {"charges": [], "payments": []})
+                expl = ic.reason
+                if ic.period and due < amt:
+                    a, b = ic.period[1], ic.period[2]
+                    n = b - a + 1
+                    k = round(float(due / amt) * n) if amt else 0
+                    expl = f"{amt:,.0f} ₪ ל-{n} חודשים = {amt / n:,.0f} ₪ לחודש × {k} חודשים שעברו"
+                yr["charges"].append([f"חשבון עסקה {o.num} ({o.doc_date:%d/%m/%Y})", ic.desc, float(amt), float(due), expl])
+            if amt - due > 0:
+                notdue.append([f"חשבון עסקה {o.num}", ic.desc, float(amt - due), ic.reason])
+    for dt, amt, what in cu.payments:
+        if dt.year in years:
+            years[dt.year]["payments"].append([dt.isoformat(), float(amt), what])
+    out_years = []
+    for y in sorted(years):
+        due, paid, debt = cu.ledger.get(y, (D0, D0, D0))
+        out_years.append({"y": y, "due": float(due), "paid": float(paid), "debt": float(debt),
+                          "charges": years[y]["charges"], "payments": years[y]["payments"]})
+    if cu.cheques_pending:
+        other.append(["שיקים דחויים בידינו", -float(cu.cheques_pending), "מנוכים מהחוב עד מועד הפירעון"])
+    if cu.tax_unverified:
+        other.append(["חשבונית מס פתוחה ב-Hyp", float(cu.tax_unverified), "לא נספרת כחוב – לאמת שהתקבל תשלום"])
+
+    owed = [f"{y['debt']:,.0f} ₪ על {y['y']}" for y in out_years if y["debt"] > 0]
+    if cu.net_to_collect > 0 and owed:
+        parts = []
+        for yy in out_years:
+            if yy["debt"] > 0:
+                n = sum(1 for p in yy["payments"] if p[1] > 0)
+                parts.append(f"ל-{yy['y']} הגיעו {yy['due']:,.0f} ₪ ושולמו {yy['paid']:,.0f} ₪ ({n} תשלומים), "
+                             f"נותרו {yy['debt']:,.0f} ₪")
+        sentence = f"הלקוח חייב {cu.net_to_collect:,.0f} ₪: " + "; ".join(parts) + "."
+        if cu.cheques_pending:
+            sentence += f" נוכו שיקים דחויים בסך {cu.cheques_pending:,.0f} ₪."
+    elif cu.open_debt > 0 and cu.accrual_based:
+        sentence = "אין חוב לגבייה: כל מה שכבר הגיע שולם."
+        if cu.not_due > 0:
+            sentence += f" היתרה הפתוחה ב-Hyp ({cu.open_debt:,.0f} ₪) היא שכ\"ט שטרם הגיע: {cu.not_due:,.0f} ₪."
+    else:
+        sentence = cu.reasons[0] if cu.reasons else ""
+    if notdue and cu.net_to_collect > 0:
+        sentence += f" בנוסף {cu.not_due:,.0f} ₪ שהופקו וטרם הגיעו (לא נדרשים עכשיו)."
+    return {"sentence": sentence, "years": out_years, "notdue": notdue, "other": other}
