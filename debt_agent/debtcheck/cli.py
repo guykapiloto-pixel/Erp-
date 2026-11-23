@@ -12,6 +12,8 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from decimal import Decimal
+
 import yaml
 
 from .engine import compute
@@ -63,6 +65,39 @@ def _customer_detail(b) -> str:
     return "\n".join(out)
 
 
+def _run_hyp(a, cfg) -> int:
+    from . import hyp, hyp_report
+    docs, issues = hyp.load_hyp_csv(a.csv)
+    board = hyp.load_board(a.board)
+    custs, more, summary = hyp.analyze(docs, board, cfg, a.as_of)
+    issues += more
+    if a.customer:
+        q = norm_text(a.customer)
+        hits = [c for c in custs if q in c.name or q == c.crn or q == str(c.hyp_id)]
+        for c in hits:
+            s = c.sums
+            print(f"לקוח: {c.name} | ח.פ {c.crn} | Hyp {c.hyp_id} | {c.priority}")
+            print(f"  חשבונות עסקה {s[hyp.T]:>13,.2f}\n  חשבוניות מס {s[hyp.I]:>14,.2f}\n"
+                  f"  חשבוניות מס קבלה {s[hyp.IR]:>9,.2f}\n  קבלות {s[hyp.R]:>20,.2f}\n  זיכויים {s[hyp.C]:>18,.2f}")
+            print(f"  חוב לפי הנוסחה {c.formula:>11,.2f}\n  חוב פתוח ב-Hyp {c.open_debt:>11,.2f}  (פער {c.gap:,.2f})")
+            print(f"  לגבייה נטו {c.net_to_collect:>15,.2f}")
+            for o in sorted(c.open_docs, key=lambda o: o.doc_date):
+                pp = f"  ← ייתכן ששולם: {o.possibly_paid_by.type} {o.possibly_paid_by.num}" if o.possibly_paid_by else ""
+                print(f"    {o.doc_date:%d/%m/%Y} {o.type} {o.num} יתרה {o.remaining:,.2f}{pp}")
+            print("  " + " | ".join(c.reasons), "\n")
+        return 0 if hits else 1
+    path = hyp_report.write(a.out, custs, issues, summary,
+                            gap_tol=Decimal(str(cfg.get("alerts", {}).get("formula_gap_tolerance", 100))))
+    from collections import Counter
+    pr = Counter(c.priority for c in custs)
+    print(f"לקוחות {summary['customers']} | חוב פתוח ב-Hyp {summary['open_total']:,.0f} ₪ "
+          f"(בלוח {summary['board_total']:,.0f})")
+    print("  " + " | ".join(f"{k}: {v}" for k, v in pr.most_common()))
+    print(f"בעיות נתונים: {sum(i.severity == 'error' for i in issues)} שגיאות, "
+          f"{sum(i.severity == 'warning' for i in issues)} אזהרות\nדוח: {path}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="debtcheck")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -73,10 +108,20 @@ def main(argv=None) -> int:
     r.add_argument("--json")
     r.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     r.add_argument("--customer")
+    h = sub.add_parser("hyp", help="ניתוח גבייה: היסטוריית מסמכי Hyp + מסמכים פתוחים מהלוח")
+    h.add_argument("--config", required=True)
+    h.add_argument("--csv", required=True, help="דוח מסמכים מ-Hyp (report.csv)")
+    h.add_argument("--board", required=True, help="תיקיית תמונת מצב של הלוח (hyp/*.json, custList/*.json)")
+    h.add_argument("--out", default="collections_report.xlsx")
+    h.add_argument("--as-of", type=date.fromisoformat)
+    h.add_argument("--customer")
     i = sub.add_parser("inspect")
     i.add_argument("--config", required=True)
     a = ap.parse_args(argv)
     cfg = load_config(a.config)
+
+    if a.cmd == "hyp":
+        return _run_hyp(a, cfg)
 
     if a.cmd == "inspect":
         from .sources.monday import iter_columns

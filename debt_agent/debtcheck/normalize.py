@@ -40,7 +40,7 @@ def customer_key(name: str, customer_id: str = "") -> str:
     return "name:" + re.sub(r"[\"'.,]", "", n).lower()
 
 
-_AMOUNT_JUNK = re.compile(r"[₪$€\s,]|ש\"ח|שח|ils|nis", re.IGNORECASE)
+_AMOUNT_JUNK = re.compile(r"ש\"ח|[₪$€\s,\"']|שח|ils|nis", re.IGNORECASE)
 
 
 def parse_amount(raw: Any) -> Decimal | None:

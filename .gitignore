@@ -6,3 +6,8 @@ node_modules/
 web/dist/
 api/data/
 *.sqlite3
+# debt_agent: customer data and reports never go into git
+debt_agent/data/
+debt_agent/**/*.csv
+debt_agent/**/*report*.xlsx
+debt_agent/config.yaml
