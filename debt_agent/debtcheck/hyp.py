@@ -158,6 +158,7 @@ class Customer:
     tags: list = field(default_factory=list)          # רשימות חריגים בלוח
     failed_charge: date | None = None     # חיוב אוטומטי שנכשל וטרם טופל
     cheques_pending: Decimal = D0         # שיקים דחויים שבידינו
+    accrual_based: bool = False           # החוב חושב לפי פירוט המסמכים (חלק יחסי לפי חודשים) בניכוי תשלומים
     not_due: Decimal = D0                 # שכ"ט שהופק בחשבון עסקה אך טרם מגיע (דוח/מאזן שטרם הוגש, חודשים עתידיים)
     fb_verdict: str = ""                  # משוב על הסוכן מהלוח: ok / wrong
     fb_note: str = ""
@@ -505,9 +506,14 @@ def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = Non
             filed[cu.key].add(int(y))
     if doc_items is not None:
         from .classify import classify_item
+        from datetime import timedelta
+        prev_month_end = as_of.replace(day=1) - timedelta(days=1)
+        auto_now = bool(cfg.get("auto_charge_accrue_current_month", False))
         for cu in custs.values():
+            # לקוח בחיוב קבוע: החודש השוטף נספר רק אחרי שהסתיים, כדי שחיוב שעוד לא בוצע החודש לא ייראה כפיגור
+            eff = as_of if (auto_now or not cu.auto_charge) else prev_month_end
             for o in cu.open_docs:
-                _classify_doc(o, doc_items.get((o.type, o.num)), as_of, filed.get(cu.key, set()), fb_docs.get(o.num),
+                _classify_doc(o, doc_items.get((o.type, o.num)), eff, filed.get(cu.key, set()), fb_docs.get(o.num),
                               cfg, classify_item)
 
     for cu in custs.values():
@@ -617,6 +623,7 @@ def _compute(cu: Customer, as_of: date, snap: date) -> None:
     else:
         base = max(cu.open_debt - cu.possibly_paid, D0)
     # שכ"ט שהופק בחשבון עסקה אך טרם מגיע: יורד מהחוב. תשלומים שלא שויכו מכסים קודם את מה שכבר מגיע.
+    cu.accrual_based = cu.has_history and any(o.lines for o in cu.open_docs)
     cu.not_due = min(sum((o.not_due for o in cu.open_docs if o.type == T), D0), base)
     cu.net_to_collect = max(base - cu.not_due - cu.paid_after_snapshot - cu.cheques_pending, D0)
 
@@ -646,8 +653,18 @@ def _classify(cu, a, gap_tol, as_of):
 
     # הקשר – מופיע תמיד
     if cu.double_counted > gap_tol:
-        r.append(f"ב-Hyp פתוח {cu.open_debt:,.0f} ₪, מתוכם {cu.double_counted:,.0f} ₪ כבר מכוסים בחשבוניות/תשלומים "
-                 "שלא שויכו לחשבון העסקה – לסגור ב-Hyp")
+        r.append(f"ב-Hyp פתוח {cu.open_debt:,.0f} ₪, מתוכם {cu.double_counted:,.0f} ₪ כבר שולמו "
+                 "(חשבוניות שהופקו בכל תשלום ולא שויכו לחשבון העסקה)")
+    if cu.accrual_based and cu.open_tx > 0:
+        s_ = cu.sums
+        paid = s_[I] + s_[IR] - s_[C]
+        nd_all = sum((o.not_due for o in cu.open_docs if o.type == T), D0)
+        calc = s_[T] - nd_all - paid
+        capped = cu.formula > cu.open_tx
+        r.append(f"חישוב: חשבונות עסקה {s_[T]:,.0f} − טרם הגיע (חלק יחסי / דוח שטרם הוגש) {nd_all:,.0f} − שולם "
+                 f"(חשבוניות מס וחשבוניות מס קבלה, בניכוי זיכויים) {paid:,.0f} = {calc:,.0f}"
+                 + (f"; החוב מוגבל לחשבונות העסקה שעדיין פתוחים ב-Hyp ({cu.open_tx:,.0f}) פחות מה שטרם הגיע = "
+                    f"{max(cu.open_tx - nd_all, D0):,.0f}" if capped else ""))
     if cu.not_due > gap_tol:
         why = Counter()
         for o in cu.open_docs:
@@ -684,9 +701,11 @@ def _classify(cu, a, gap_tol, as_of):
     elif cu.failed_charge:
         cu.priority = "דחוף" if net >= urgent_min else "לטיפול"
         r.insert(0, f"חיוב אוטומטי נכשל ב-{cu.failed_charge:%d/%m/%Y} וטרם טופל – לגבייה {net:,.0f} ₪")
-    elif cu.auto_charge:
+    elif cu.auto_charge and (net < min_debt or not cu.accrual_based):
+        # חיוב קבוע שמשולם כסדרו (או שאין פירוט מסמכים לחשב לפיו): לא נספר, כמו בלוח
         cu.priority = "חיוב קבוע"
-        r.insert(0, "בחיוב קבוע חודשי – לא נספר ביתרת החייבים (כמו בלוח)")
+        r.insert(0, "בחיוב קבוע חודשי, משולם כסדרו – אין חוב לגבייה" if cu.accrual_based
+                 else "בחיוב קבוע חודשי – לא נספר ביתרת החייבים (כמו בלוח)")
     elif net < min_debt and cu.not_due >= min_debt:
         cu.priority = "טרם מגיע"
         r.insert(0, "אין חוב לגבייה כרגע: שכ\"ט שהופק בחשבון עסקה אך העבודה טרם בוצעה / הוגשה")
@@ -706,6 +725,8 @@ def _classify(cu, a, gap_tol, as_of):
             cu.priority = "לטיפול"
         else:
             cu.priority = "מעקב"
+        if cu.auto_charge:
+            r.insert(0, "בחיוב קבוע אך בפיגור: החלק היחסי שהגיע עד סוף החודש הקודם גבוה ממה ששולם")
         r.insert(0, f"לגבייה {net:,.0f} ₪" + (f" (נדרש בלוח {cu.demanded:,.0f})" if cu.demanded is not None
                                                and abs(cu.demanded - net) > 1 else "")
                  + f", מסמך פתוח ותיק {days} ימים")

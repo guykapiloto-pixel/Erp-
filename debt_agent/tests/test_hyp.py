@@ -269,3 +269,19 @@ def test_fee_not_yet_owed_and_board_feedback(setup):
     assert a2.not_due == 0 and a2.net_to_collect == D(5000) and a2.priority == "דחוף" and a2.fb_verdict == "wrong"
     board["agent_fb"] = [{"hypId": 1, "name": 'אלפא בע"מ', "docs": {"1002": "due"}}]
     assert {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}['אלפא בע"מ'].not_due == 0
+
+
+def test_annual_account_prorated_minus_payments(setup):
+    """שיטת העבודה: חשבון עסקה שנתי אחד, ובכל תשלום חשבונית מס קבלה נפרדת. חוב = סכום/12 × חודשים שהגיעו − שולם.
+    בטא (חיוב קבוע): שנתי 12,000 ל-01-12/26 נסגר ב-Hyp; פתוח 1,000 (11/26). לקוח בחיוב קבוע – נובמבר עוד לא נספר."""
+    docs, board, cfg = setup[3], setup[4], setup[5]
+    # טת: חיוב קבוע, חשבון עסקה שנתי 2,000 ל-01-12/26 שהופק ב-01/11 – ללא תשלומים. עד סוף אוקטובר הגיעו 10/12.
+    items = {(hyp.T, "1010"): {"title": "", "items": [{"desc": "הנהלת חשבונות 01-12/26", "sku": "101", "amount": "1694.92"}]},
+             (hyp.T, "1004"): {"title": "", "items": [{"desc": "הנהלת חשבונות 11/26", "sku": "101", "amount": "847.46"}]}}
+    board = dict(board, failed=[])
+    c = {x.name: x for x in hyp.analyze(docs, board, cfg, date(2026, 11, 23), items)[0]}
+    t = c["טת"]
+    assert t.not_due == D("333.33") and t.net_to_collect == D("1666.67")       # 2,000 × 10/12, לא שולם דבר
+    assert t.priority == "מעקב" and any("בפיגור" in r for r in t.reasons)     # המסמך בן 22 ימים
+    b = c["בטא"]                                                                # נובמבר טרם נספר → אין חוב
+    assert b.net_to_collect == 0 and b.priority in ("חיוב קבוע", "טרם מגיע")
