@@ -28,6 +28,7 @@ _PERIOD_KIND = re.compile(r"הנהלת חשבונות|הנה\"?ח|הנהח|שכ\
 # 01-12/26 · 1-3/ 26 · 09/2026 · 12/25
 _RANGE = re.compile(r"(?<!\d)(\d{1,2})\s*-\s*(\d{1,2})\s*/\s*(\d{4}|\d{2})(?!\d)")
 _MONTH = re.compile(r"(?<![\d-])(\d{1,2})\s*/\s*(\d{4}|\d{2})(?!\d)")
+_DOTMONTH = re.compile(r"(?<![\d.])(\d{1,2})\.(\d{2})(?![\d.])")      # הנה"ח 9.24
 _YEAR = re.compile(r"(?<![\d/])(20\d{2}|\d{2})(?![\d/])")
 
 
@@ -55,7 +56,7 @@ def parse_period(text: str):
         a, b, y = int(m.group(1)), int(m.group(2)), _yr(m.group(3))
         if y and 1 <= a <= b <= 12:
             return y, a, b
-    m = _MONTH.search(text)
+    m = _MONTH.search(text) or _DOTMONTH.search(text)
     if m:
         a, y = int(m.group(1)), _yr(m.group(2))
         if y and 1 <= a <= 12:
@@ -64,7 +65,7 @@ def parse_period(text: str):
 
 
 def parse_year(text: str) -> int | None:
-    t = _RANGE.sub(" ", _MONTH.sub(" ", text))
+    t = _RANGE.sub(" ", _DOTMONTH.sub(" ", _MONTH.sub(" ", text)))
     for m in _YEAR.finditer(t):
         y = _yr(m.group(1))
         if y:

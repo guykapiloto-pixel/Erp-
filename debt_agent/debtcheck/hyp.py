@@ -275,9 +275,9 @@ def _load_coll(d: Path) -> dict:
 # ---------------------------------------------------------------- analysis
 
 ACTIONS = {"דחוף": "פנייה ללקוח", "לטיפול": "פנייה ללקוח", "מעקב": "פנייה ללקוח",
-           "לסגירה ב-Hyp": "סגירת מסמך ב-Hyp", "טרם מגיע": "ללא פעולה", "ממתין להנהלה": "ממתין לגיא/דקל", "נבדק – תקין": "ללא פעולה",
+           "לסגירה ב-Hyp": "סגירת מסמך ב-Hyp", "בוטל – לסגור ב-Hyp": "ביטול המסמך ב-Hyp", "משפטי": "טיפול משפטי", "טרם מגיע": "ללא פעולה", "ממתין להנהלה": "ממתין לגיא/דקל", "נבדק – תקין": "ללא פעולה",
            "חיוב קבוע": "ללא פעולה", "מוחרג": "ללא פעולה", "תקין": ""}
-ORDER = ["דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "טרם מגיע", "לסגירה ב-Hyp", "חיוב קבוע", "נבדק – תקין", "מוחרג", "תקין"]
+ORDER = ["דחוף", "לטיפול", "מעקב", "ממתין להנהלה", "משפטי", "טרם מגיע", "לסגירה ב-Hyp", "בוטל – לסגור ב-Hyp", "חיוב קבוע", "נבדק – תקין", "מוחרג", "תקין"]
 
 def analyze(docs: list[HypDoc], board: dict, cfg: dict, as_of: date | None = None, doc_items: dict | None = None,
             pay_items: dict | None = None) -> tuple[list[Customer], list[Issue], dict]:
@@ -757,7 +757,14 @@ def _classify(cu, a, gap_tol, as_of):
     elif since_pay is not None and since_pay >= no_pay_days:
         r.append(f"תשלום אחרון לפני {since_pay} ימים")
 
-    if cu.excluded or cu.hidden:
+    fbn = cu.fb_note or ""
+    if re.search(r"בוטל|לא לחיוב|אין חיוב", fbn):
+        cu.priority = "בוטל – לסגור ב-Hyp"
+        r.insert(0, f"לפי המשוב בלוח: {fbn}")
+    elif re.search(r"פשיטת רגל|כינוס|פירוק|הוצאה לפועל|עורך דין|תביעה", fbn):
+        cu.priority = "משפטי"
+        r.insert(0, f"לפי המשוב בלוח: {fbn}")
+    elif cu.excluded or cu.hidden:
         cu.priority = "מוחרג"
         r.insert(0, "מוחרג לפי הגדרה" if cu.excluded else "הוסתר מרשימת החוב הפתוח בלוח")
     elif cu.open_debt < min_debt:

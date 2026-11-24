@@ -98,3 +98,7 @@ def test_document_split_and_customer_net():
     # יתרה כולל מע"מ: 1,416 / 1,180 / 944.  מגיע: 1,416×11/12=1,298 + 0 + 944 = 2,242
     assert [a for _, a, _ in o.lines] == [D("1416.00"), D("1180.00"), D("944.00")]
     assert o.due == D("2242.00") and o.not_due == D("1298.00") and o.due + o.not_due == o.remaining
+
+
+def test_dot_month_format():
+    assert parse_period("הנה\"ח 9.24") == (2024, 9, 9) and parse_period("מע\"מ 18.00%") is None
